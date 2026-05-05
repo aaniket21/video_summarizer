@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Video Link Extractor Sidebar</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="header">
+        <h1>Video Link Extractor</h1>
+        <button id="refreshButton" type="button">Refresh</button>
+      </header>
+      <div class="controls">
+        <label class="toggle">
+          <input id="hideTechnicalToggle" type="checkbox" checked />
+          Hide technical links
+        </label>
+        <span id="autoRefreshLabel" class="auto-refresh">Auto-refresh: On (2s)</span>
+      </div>
+      <p id="statusText" class="status">Checking current tab...</p>
+      <ul id="linksList" class="links"></ul>
+    </main>
+    <script src="sidebar.js"></script>
+  </body>
+</html>

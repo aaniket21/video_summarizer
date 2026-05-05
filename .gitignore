@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE and OS files
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+
+# Local environment files
+.env
+
+# Generated project data
+videos/
+audio/
+transcripts/
+notes/
+pdf/
+
+# Large media files
+*.mp4
+*.mkv
+*.mov
+*.avi
+*.webm
+*.wav
+*.mp3
+*.m4a
+
+# Build and cache artifacts
+.pytest_cache/
+.mypy_cache/

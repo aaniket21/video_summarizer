@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Actual Video Link Extractor",
+  "version": "1.0.0",
+  "description": "Detect and display playable media URLs from the current tab.",
+  "permissions": ["activeTab", "tabs", "webRequest", "sidePanel"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Video Link Extractor",
+    "default_popup": "popup.html"
+  },
+  "side_panel": {
+    "default_path": "sidebar.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

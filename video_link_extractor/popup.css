@@ -1,0 +1,154 @@
+:root {
+  color-scheme: light;
+}
+
+body {
+  margin: 0;
+  width: 420px;
+  font-family: "Segoe UI", Tahoma, sans-serif;
+  background: #f5f8fc;
+  color: #0f172a;
+}
+
+.app {
+  padding: 12px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+button {
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #0f172a;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #eef2ff;
+}
+
+.status {
+  margin: 10px 0;
+  font-size: 13px;
+  color: #334155;
+}
+
+.controls {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #1e293b;
+}
+
+.toggle input {
+  margin: 0;
+}
+
+.auto-refresh {
+  font-size: 11px;
+  color: #475569;
+}
+
+.links {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+  max-height: 430px;
+  overflow: auto;
+}
+
+.link-item {
+  border: 1px solid #dbeafe;
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 8px;
+}
+
+.link-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.badges {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.badge-kind {
+  background: #e0f2fe;
+  color: #075985;
+}
+
+.badge-main {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.score {
+  font-size: 11px;
+  color: #334155;
+  font-weight: 700;
+}
+
+.link-url {
+  font-size: 12px;
+  line-height: 1.4;
+  word-break: break-all;
+  margin-bottom: 6px;
+}
+
+.link-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.source {
+  font-size: 11px;
+  color: #475569;
+}
+
+.copy-btn {
+  font-size: 12px;
+  padding: 4px 8px;
+}
