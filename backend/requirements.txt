@@ -2,6 +2,7 @@ fastapi
 uvicorn[standard]
 sqlalchemy>=2.0.0
 asyncpg
+aiosqlite
 alembic
 pydantic
 pydantic-settings
@@ -15,3 +16,4 @@ websockets
 httpx
 pytest
 pytest-asyncio
+stripe

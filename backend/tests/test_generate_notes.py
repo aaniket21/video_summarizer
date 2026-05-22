@@ -14,8 +14,9 @@ def test_generate_notes_missing_transcript_returns_400(monkeypatch):
 
 
 def test_generate_notes_missing_api_key_returns_500(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    response = client.post("/api/generate-notes", json={"transcript": ""})
+    response = client.post("/api/generate-notes", json={"transcript": "hello"})
     assert response.status_code == 500
     assert response.json() == {"error": "GEMINI_API_KEY is not configured on the server."}
 

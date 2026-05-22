@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID, uuid4
 from typing import Optional, List, Dict, Any
-from sqlalchemy import String, DateTime, JSON, ForeignKey, Enum as SQLEnum
+from sqlalchemy import String, DateTime, JSON, Enum as SQLEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .session import Base
 import enum
@@ -49,3 +49,20 @@ class JobModel(Base):
                 "metadata": self.metadata_json
             } if self.status == JobStatus.COMPLETED else None
         }
+
+
+class BillingCustomerModel(Base):
+    __tablename__ = "billing_customers"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    user_id: Mapped[str] = mapped_column(String, index=True)
+    stripe_customer_id: Mapped[str] = mapped_column(String, unique=True, index=True)
+    stripe_subscription_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    plan: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    status: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    current_period_end: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )

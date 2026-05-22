@@ -3,22 +3,26 @@ import hashlib
 import hmac
 import json
 import os
-import re
 import subprocess
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-import google.generativeai as genai
-from google.generativeai import GenerativeModel
+try:
+    import stripe
+except ModuleNotFoundError:  # Optional dependency for tests and minimal installs.
+    stripe = None
 from fastapi import FastAPI, Header, Request, WebSocket, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .db.session import get_db
 from .db.repository import SQLAlchemyJobRepository, JobStatus
+from .db.billing_repository import BillingRepository
 from .db.models import JobModel
+from .llm import providers as llm_providers
 
 app = FastAPI()
 def parse_bearer_token(authorization: str | None) -> str | None:
@@ -73,6 +77,29 @@ def require_auth(authorization: str | None) -> dict:
 	if not token:
 		raise ValueError("Invalid or expired token")
 	return verify_jwt_hs256(token)
+
+
+def require_stripe_client():
+    if stripe is None:
+        raise RuntimeError("stripe is not installed on the server.")
+    secret = os.getenv("STRIPE_SECRET_KEY", "")
+    if not secret:
+        raise RuntimeError("STRIPE_SECRET_KEY is not configured on the server.")
+    stripe.api_key = secret
+    return stripe
+
+
+def get_price_id_for_plan(plan: str) -> str:
+    if plan == "student":
+        return os.getenv("STRIPE_STUDENT_PRICE_ID", "")
+    return ""
+
+
+def map_price_id_to_plan(price_id: str) -> Optional[str]:
+    student_price = os.getenv("STRIPE_STUDENT_PRICE_ID", "")
+    if student_price and price_id == student_price:
+        return "student"
+    return None
 
 
 @app.get("/api/profile")
@@ -255,15 +282,170 @@ async def list_jobs(
             pass
 
     jobs = await repo.list_by_user(user_id, limit=limit, offset=offset, status=job_status)
-    
-    # Note: For accurate 'total', we'd need another repo method, 
-    # but for now we'll return what we have or a placeholder.
+    total_count = await repo.count_by_user(user_id, status=job_status)
     return JSONResponse({
         "items": [j.to_dict() for j in jobs],
         "page": page,
         "limit": limit,
-        "total": len(jobs), # Simplified
+        "total": total_count,
     })
+
+
+@app.post("/api/v1/billing/checkout")
+async def create_billing_checkout(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        claims = require_auth(authorization)
+    except (PermissionError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=401)
+
+    user_id = claims.get("sub")
+    if not user_id:
+        return JSONResponse({"error": "Invalid token: missing sub claim"}, status_code=401)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    plan = str(body.get("plan") or "").strip().lower()
+    if plan != "student":
+        return JSONResponse({"error": "Unsupported plan"}, status_code=400)
+
+    price_id = get_price_id_for_plan(plan)
+    if not price_id:
+        return JSONResponse({"error": "Stripe price is not configured"}, status_code=500)
+
+    success_url = os.getenv("STRIPE_SUCCESS_URL", "")
+    cancel_url = os.getenv("STRIPE_CANCEL_URL", "")
+    if not success_url or not cancel_url:
+        return JSONResponse({"error": "Stripe redirect URLs are not configured"}, status_code=500)
+
+    try:
+        stripe_client = require_stripe_client()
+    except RuntimeError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+    billing_repo = BillingRepository(db)
+    customer = await billing_repo.get_by_user(user_id)
+    if not customer:
+        stripe_customer = stripe_client.Customer.create(metadata={"user_id": user_id})
+        customer = await billing_repo.upsert_customer(user_id, stripe_customer.id)
+
+    session = stripe_client.checkout.Session.create(
+        mode="subscription",
+        customer=customer.stripe_customer_id,
+        line_items=[{"price": price_id, "quantity": 1}],
+        success_url=success_url,
+        cancel_url=cancel_url,
+        allow_promotion_codes=True,
+    )
+
+    await billing_repo.update_subscription_by_user(
+        user_id=user_id,
+        plan=plan,
+        status="pending",
+    )
+
+    return JSONResponse({"url": session.url})
+
+
+@app.post("/api/v1/billing/portal")
+async def create_billing_portal(
+    authorization: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        claims = require_auth(authorization)
+    except (PermissionError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=401)
+
+    user_id = claims.get("sub")
+    if not user_id:
+        return JSONResponse({"error": "Invalid token: missing sub claim"}, status_code=401)
+
+    return_url = os.getenv("STRIPE_PORTAL_RETURN_URL", "")
+    if not return_url:
+        return JSONResponse({"error": "Stripe portal return URL is not configured"}, status_code=500)
+
+    try:
+        stripe_client = require_stripe_client()
+    except RuntimeError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+    billing_repo = BillingRepository(db)
+    customer = await billing_repo.get_by_user(user_id)
+    if not customer:
+        stripe_customer = stripe_client.Customer.create(metadata={"user_id": user_id})
+        customer = await billing_repo.upsert_customer(user_id, stripe_customer.id)
+
+    session = stripe_client.billing_portal.Session.create(
+        customer=customer.stripe_customer_id,
+        return_url=return_url,
+    )
+
+    return JSONResponse({"url": session.url})
+
+
+@app.post("/api/v1/billing/webhook")
+async def billing_webhook(request: Request, db: AsyncSession = Depends(get_db)):
+    secret = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+    if not secret:
+        return JSONResponse({"error": "Stripe webhook secret is not configured"}, status_code=500)
+
+    if stripe is None:
+        return JSONResponse({"error": "stripe is not installed on the server."}, status_code=500)
+
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature")
+
+    try:
+        event = stripe.Webhook.construct_event(payload, sig_header, secret)
+    except Exception:
+        return JSONResponse({"error": "Invalid signature"}, status_code=400)
+
+    event_type = event.get("type")
+    data = event.get("data", {}).get("object", {})
+
+    billing_repo = BillingRepository(db)
+
+    if event_type in {"customer.subscription.created", "customer.subscription.updated"}:
+        customer_id = str(data.get("customer") or "")
+        subscription_id = str(data.get("id") or "")
+        status = str(data.get("status") or "") or None
+        price_id = None
+        items = data.get("items", {}).get("data", [])
+        if items:
+            price_id = str(items[0].get("price", {}).get("id") or "")
+
+        plan = map_price_id_to_plan(price_id or "")
+        period_end = None
+        if data.get("current_period_end"):
+            period_end = datetime.fromtimestamp(int(data["current_period_end"]), tz=timezone.utc)
+
+        if customer_id:
+            await billing_repo.update_subscription_by_customer(
+                stripe_customer_id=customer_id,
+                plan=plan,
+                status=status,
+                stripe_subscription_id=subscription_id or None,
+                current_period_end=period_end,
+            )
+
+    if event_type == "customer.subscription.deleted":
+        customer_id = str(data.get("customer") or "")
+        if customer_id:
+            await billing_repo.update_subscription_by_customer(
+                stripe_customer_id=customer_id,
+                plan=None,
+                status="canceled",
+                stripe_subscription_id=str(data.get("id") or "") or None,
+            )
+
+    return JSONResponse({"status": "ok"})
 
 
 @app.websocket("/ws/jobs/{job_id}")
@@ -347,7 +529,6 @@ async def chat_with_job(job_id: str, request: Request):
 	})
 
 SCRIPT_PATH = Path(__file__).resolve().parents[2] / "web" / "server" / "download_audio.py"
-DEFAULT_GEMINI_MODEL = "gemini-3-flash-preview"
 
 
 def run_download_audio(url: str) -> dict:
@@ -370,78 +551,8 @@ def run_download_audio(url: str) -> dict:
 		raise RuntimeError(f"Failed to parse python output: {exc.msg}") from exc
 
 
-def sanitize_text(text: str) -> str:
-	return text.replace("\r\n", "\n").strip()
-
-
-def extract_title_from_markdown(markdown: str) -> str:
-	match = re.search(r"^#\s+(.*)$", markdown, re.MULTILINE)
-	if match and match.group(1):
-		return match.group(1).strip()
-
-	for line in markdown.split("\n"):
-		candidate = line.strip()
-		if candidate:
-			return candidate
-
-	return "AI Video Lecture Notes"
-
-
 def generate_notes_payload(transcript: str, chapters: list) -> dict:
-	api_key = os.getenv("GEMINI_API_KEY", "")
-	if not api_key:
-		raise RuntimeError("GEMINI_API_KEY is not configured on the server.")
-
-	chapter_text = "\n".join(f"- {c}" for c in chapters) if chapters else "- No strong chapter splits found"
-	prompt = f"""
-Create polished lecture notes based on the transcript below.
-
-Requirements:
-- Output valid, clean markdown only.
-- Use long paragraphs and readable bullet lists.
-- Avoid decorative markdown clutter such as repeated separators or excessive bold markers.
-- Make it study-friendly and visually structured for PDF export.
-- Cover all important details, examples, interview angles, and edge cases.
-- Explain complex concepts in a simple way, as if teaching a beginner.
-- For code snippets, use markdown code blocks with appropriate language tags.
-- If the transcript is too short, expand on key concepts with general knowledge.
-- If the transcript is very long, prioritize clarity and conciseness while covering all major points.
-- Include a variety of examples and interview questions that could be asked on the topic.
-
-Output format (in this exact order):
-1) Title as a single H1 at the very top (start with "# ")
-2) Heading "Quick Revision"
-3) Heading "Key Concepts"
-4) Heading "Detailed Explanation"
-5) Heading "Examples"
-6) Heading "Interview Questions"
-7) Heading "Summary"
-
-Potential chapter candidates:
-{chapter_text}
-
-Transcript:
-{transcript}
-""".strip()
-
-	genai.configure(api_key=api_key)
-	model_name = os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
-	model = GenerativeModel(model_name)
-	result = model.generate_content(prompt)
-	markdown = ""
-	if hasattr(result, "response") and hasattr(result.response, "text"):
-		markdown = result.response.text()
-	elif hasattr(result, "text"):
-		markdown = result.text
-
-	markdown = sanitize_text(markdown or "")
-
-	if not markdown:
-		raise RuntimeError("Gemini returned empty notes.")
-
-	title = extract_title_from_markdown(markdown)
-
-	return {"title": title, "notesMarkdown": markdown}
+    return llm_providers.generate_notes(transcript, chapters)
 
 
 @app.post("/api/download-audio")

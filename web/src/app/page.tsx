@@ -11,6 +11,7 @@ import { useSummarizerStore } from "@/store/useSummarizerStore";
 import { loadHistoryFromLocalStorage, loadHistoryItem, saveHistoryItem } from "@/lib/storage";
 import { generatePdfFromMarkdown } from "@/lib/pdf";
 import { apiFetch } from "@/lib/api";
+import { fetchCloudHistory, type CloudHistoryItem } from "@/lib/cloudHistory";
 import { AuthPanel } from "@/components/AuthPanel";
 import { useAuth } from "@/hooks/useAuth";
 import type { JobInput, JobStep } from "@/store/useSummarizerStore";
@@ -75,7 +76,7 @@ export default function Home() {
     upsertHistoryItem,
   } = useSummarizerStore();
 
-  const { accessToken } = useAuth();
+  const { accessToken, status } = useAuth();
 
   const [url, setUrl] = useState("");
   const [file, setFile] = useState<File | null>(null);
@@ -83,6 +84,10 @@ export default function Home() {
 
   const [pdfLoading, setPdfLoading] = useState(false);
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
+
+  const [cloudHistory, setCloudHistory] = useState<CloudHistoryItem[]>([]);
+  const [cloudHistoryLoading, setCloudHistoryLoading] = useState(false);
+  const [cloudHistoryError, setCloudHistoryError] = useState("");
 
   const abortRef = useRef<AbortController | null>(null);
   const cancelledRef = useRef(false);
@@ -108,6 +113,52 @@ export default function Home() {
   useEffect(() => {
     setHistory(loadHistoryFromLocalStorage());
   }, [setHistory]);
+
+  useEffect(() => {
+    if (status !== "authed") {
+      setCloudHistory([]);
+      setCloudHistoryError("");
+      setCloudHistoryLoading(false);
+      return;
+    }
+    if (!accessToken) return;
+
+    let active = true;
+    setCloudHistoryLoading(true);
+    setCloudHistoryError("");
+
+    fetchCloudHistory(accessToken)
+      .then((items) => {
+        if (!active) return;
+        setCloudHistory(items);
+      })
+      .catch((error) => {
+        if (!active) return;
+        setCloudHistoryError((error as Error).message || "Unable to load cloud history.");
+      })
+      .finally(() => {
+        if (!active) return;
+        setCloudHistoryLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [accessToken, status]);
+
+  async function refreshCloudHistory() {
+    if (!accessToken) return;
+    setCloudHistoryLoading(true);
+    setCloudHistoryError("");
+    try {
+      const items = await fetchCloudHistory(accessToken);
+      setCloudHistory(items);
+    } catch (error) {
+      setCloudHistoryError((error as Error).message || "Unable to load cloud history.");
+    } finally {
+      setCloudHistoryLoading(false);
+    }
+  }
 
   useEffect(() => {
     try {
@@ -723,6 +774,26 @@ export default function Home() {
                           </button>
                           <button
                             className="px-3 py-2 rounded-xl border border-[var(--border)] hover:bg-white/10 transition text-sm"
+                            disabled={!notesMarkdown || !transcriptText}
+                            onClick={() => {
+                              const payload = {
+                                title,
+                                transcript: transcriptText,
+                                notesMarkdown,
+                              };
+                              const blob = new Blob([JSON.stringify(payload, null, 2)], {
+                                type: "application/json;charset=utf-8",
+                              });
+                              const a = document.createElement("a");
+                              a.href = URL.createObjectURL(blob);
+                              a.download = `${title}_notes.json`;
+                              a.click();
+                            }}
+                          >
+                            JSON
+                          </button>
+                          <button
+                            className="px-3 py-2 rounded-xl border border-[var(--border)] hover:bg-white/10 transition text-sm"
                             disabled={!transcriptText}
                             onClick={() => {
                               const blob = new Blob([transcriptText], { type: "text/plain;charset=utf-8" });
@@ -746,6 +817,20 @@ export default function Home() {
                             }}
                           >
                             Notes (.md)
+                          </button>
+                          <button
+                            className="px-3 py-2 rounded-xl border border-[var(--border)] text-[var(--muted)] text-sm cursor-not-allowed"
+                            disabled
+                            title="DOCX export is available in the desktop app."
+                          >
+                            DOCX
+                          </button>
+                          <button
+                            className="px-3 py-2 rounded-xl border border-[var(--border)] text-[var(--muted)] text-sm cursor-not-allowed"
+                            disabled
+                            title="Anki export is coming soon."
+                          >
+                            Anki
                           </button>
                         </div>
                       </div>
@@ -844,12 +929,47 @@ export default function Home() {
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <h2 className="font-semibold text-lg">History</h2>
-                  <p className="text-sm text-[var(--muted)] mt-1">Saved in your browser (local storage)</p>
+                  <p className="text-sm text-[var(--muted)] mt-1">Cloud sync for signed-in users</p>
                 </div>
-                <div className="text-xs text-[var(--muted)]">{history.length} items</div>
+                {status === "authed" && (
+                  <button
+                    type="button"
+                    onClick={refreshCloudHistory}
+                    className="text-xs text-[var(--muted)] hover:text-slate-900 dark:hover:text-white transition"
+                    disabled={cloudHistoryLoading}
+                  >
+                    {cloudHistoryLoading ? "Refreshing..." : "Refresh"}
+                  </button>
+                )}
               </div>
 
-              <div className="mt-4 space-y-3">
+              {status === "authed" && (
+                <div className="mt-4 space-y-3">
+                  <div className="text-xs uppercase tracking-wide text-[var(--muted)]">Cloud history</div>
+                  {cloudHistoryLoading && <div className="text-sm text-[var(--muted)]">Loading cloud history...</div>}
+                  {cloudHistoryError && <div className="text-sm text-red-500">{cloudHistoryError}</div>}
+                  {!cloudHistoryLoading && !cloudHistoryError && cloudHistory.length === 0 && (
+                    <div className="text-sm text-[var(--muted)]">No synced jobs yet.</div>
+                  )}
+                  {cloudHistory.slice(0, 8).map((h) => (
+                    <div
+                      key={h.id}
+                      className="w-full rounded-xl border border-[var(--border)] bg-[var(--card)] p-3"
+                    >
+                      <div className="font-medium line-clamp-2">{h.title}</div>
+                      <div className="text-xs text-[var(--muted)] mt-1">
+                        {new Date(h.createdAt).toLocaleDateString()} • {h.status}
+                      </div>
+                    </div>
+                  ))
+                </div>
+              )}
+
+              <div className="mt-6 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="text-xs uppercase tracking-wide text-[var(--muted)]">Local history</div>
+                  <div className="text-xs text-[var(--muted)]">{history.length} items</div>
+                </div>
                 {history.length === 0 ? (
                   <div className="text-sm text-[var(--muted)]">No previous summaries yet.</div>
                 ) : (

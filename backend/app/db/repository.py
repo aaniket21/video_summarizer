@@ -1,6 +1,6 @@
 from typing import List, Optional, Protocol, Dict, Any
 from uuid import UUID
-from sqlalchemy import select, update, delete, desc
+from sqlalchemy import select, update, delete, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from .models import JobModel, JobStatus
 
@@ -14,6 +14,7 @@ class JobRepository(Protocol):
         offset: int = 0,
         status: Optional[JobStatus] = None
     ) -> List[JobModel]: ...
+    async def count_by_user(self, user_id: str, status: Optional[JobStatus] = None) -> int: ...
     async def update_status(self, job_id: UUID, status: JobStatus, progress: float = 0.0, error: Optional[str] = None) -> Optional[JobModel]: ...
     async def update_result(self, job_id: UUID, transcript: str, summary: str, metadata: Dict[str, Any]) -> Optional[JobModel]: ...
     async def delete(self, job_id: UUID) -> bool: ...
@@ -51,6 +52,13 @@ class SQLAlchemyJobRepository:
         
         result = await self.session.execute(query)
         return list(result.scalars().all())
+
+    async def count_by_user(self, user_id: str, status: Optional[JobStatus] = None) -> int:
+        query = select(func.count()).select_from(JobModel).where(JobModel.user_id == user_id)
+        if status:
+            query = query.where(JobModel.status == status)
+        result = await self.session.execute(query)
+        return int(result.scalar_one() or 0)
 
     async def update_status(self, job_id: UUID, status: JobStatus, progress: float = 0.0, error: Optional[str] = None) -> Optional[JobModel]:
         job = await self.get_by_id(job_id)

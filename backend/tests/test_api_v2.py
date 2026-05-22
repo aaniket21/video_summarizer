@@ -7,9 +7,9 @@ import hashlib
 import time
 from uuid import UUID
 from httpx import AsyncClient, ASGITransport
-from app.main import app
-from app.db.session import Base, get_db
-from app.db.models import JobStatus
+from backend.app.main import app
+from backend.app.db.session import Base, get_db
+from backend.app.db.models import JobStatus
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
 # Use a test database
@@ -98,6 +98,20 @@ async def test_api_list_jobs(test_db, auth_header):
         res = await ac.get("/api/v1/jobs", headers=auth_header)
         assert res.status_code == 200
         assert len(res.json()["items"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_api_list_jobs_returns_total_count(test_db, auth_header):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        await ac.post("/api/v1/jobs", json={"video_url": "v1"}, headers=auth_header)
+        await ac.post("/api/v1/jobs", json={"video_url": "v2"}, headers=auth_header)
+        await ac.post("/api/v1/jobs", json={"video_url": "v3"}, headers=auth_header)
+
+        res = await ac.get("/api/v1/jobs", params={"limit": 2}, headers=auth_header)
+        assert res.status_code == 200
+        payload = res.json()
+        assert len(payload["items"]) == 2
+        assert payload["total"] == 3
 
 @pytest.mark.asyncio
 async def test_api_delete_job(test_db, auth_header):
