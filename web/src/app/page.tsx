@@ -5,10 +5,14 @@ import React, { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import Link from "next/link";
 
 import { useSummarizerStore } from "@/store/useSummarizerStore";
 import { loadHistoryFromLocalStorage, loadHistoryItem, saveHistoryItem } from "@/lib/storage";
 import { generatePdfFromMarkdown } from "@/lib/pdf";
+import { apiFetch } from "@/lib/api";
+import { AuthPanel } from "@/components/AuthPanel";
+import { useAuth } from "@/hooks/useAuth";
 import type { JobInput, JobStep } from "@/store/useSummarizerStore";
 
 const STEPS: { key: JobStep; label: string }[] = [
@@ -70,6 +74,8 @@ export default function Home() {
     setHistory,
     upsertHistoryItem,
   } = useSummarizerStore();
+
+  const { accessToken } = useAuth();
 
   const [url, setUrl] = useState("");
   const [file, setFile] = useState<File | null>(null);
@@ -252,12 +258,16 @@ export default function Home() {
 
       const controller = new AbortController();
       abortRef.current = controller;
-      const resp = await fetch("/api/download-audio", {
+      const resp = await apiFetch(
+        "/api/download-audio",
+        {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
         body: JSON.stringify({ url }),
-      });
+        },
+        accessToken,
+      );
       if (!resp.ok) {
         const err = await resp.json().catch(() => null);
         throw new Error(err?.error || `Server download failed (${resp.status})`);
@@ -334,11 +344,15 @@ export default function Home() {
       appendLog("Generating structured notes with Gemini...");
 
       const chapters = extractChapters(transcriptText);
-      const resp = await fetch("/api/generate-notes", {
+      const resp = await apiFetch(
+        "/api/generate-notes",
+        {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ transcript: transcriptText, chapters }),
-      });
+        },
+        accessToken,
+      );
       if (!resp.ok) {
         const err = await resp.json().catch(() => null);
         throw new Error(err?.error || `Gemini failed (${resp.status})`);
@@ -432,13 +446,21 @@ export default function Home() {
               <div className="text-xs text-[var(--muted)]">Client-first processing with Web Workers</div>
             </div>
           </div>
-          <button
-            onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-            className="px-3 py-2 rounded-xl border border-[var(--border)] bg-[var(--card)] hover:bg-white/20 dark:hover:bg-white/10 transition text-sm"
-            aria-label="Toggle theme"
-          >
-            {theme === "dark" ? "Light" : "Dark"} mode
-          </button>
+          <div className="flex items-center gap-2">
+            <Link
+              href="/account"
+              className="px-3 py-2 rounded-xl border border-[var(--border)] bg-[var(--card)] hover:bg-white/20 dark:hover:bg-white/10 transition text-sm"
+            >
+              Account
+            </Link>
+            <button
+              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+              className="px-3 py-2 rounded-xl border border-[var(--border)] bg-[var(--card)] hover:bg-white/20 dark:hover:bg-white/10 transition text-sm"
+              aria-label="Toggle theme"
+            >
+              {theme === "dark" ? "Light" : "Dark"} mode
+            </button>
+          </div>
         </div>
       </header>
 
@@ -807,6 +829,17 @@ export default function Home() {
           </div>
 
           <aside className="lg:col-span-5 space-y-6">
+            <motion.section className="card rounded-2xl p-6" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h2 className="font-semibold text-lg">Account</h2>
+                  <p className="text-sm text-[var(--muted)] mt-1">Sign in for cloud history and premium exports.</p>
+                </div>
+              </div>
+              <div className="mt-4">
+                <AuthPanel />
+              </div>
+            </motion.section>
             <motion.section className="card rounded-2xl p-6" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
               <div className="flex items-start justify-between gap-3">
                 <div>

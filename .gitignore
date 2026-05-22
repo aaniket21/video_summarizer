@@ -38,3 +38,10 @@ pdf/
 # Build and cache artifacts
 .pytest_cache/
 .mypy_cache/
+
+
+AGENT_RULES.md
+HOW_TO_USE.md
+PRD.md
+PREVIOUS_TASKS.md
+TASK_LIST.md
