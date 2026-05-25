@@ -170,3 +170,31 @@ class StudentVerificationModel(Base):
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class ReferralCodeModel(Base):
+    __tablename__ = "referral_codes"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    user_id: Mapped[str] = mapped_column(String, index=True, unique=True)
+    code: Mapped[str] = mapped_column(String, unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class ReferralRedemptionModel(Base):
+    __tablename__ = "referral_redemptions"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    referrer_user_id: Mapped[str] = mapped_column(String, index=True)
+    referred_user_id: Mapped[str] = mapped_column(String, index=True)
+    code: Mapped[str] = mapped_column(String, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class ReferralCreditModel(Base):
+    __tablename__ = "referral_credits"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    user_id: Mapped[str] = mapped_column(String, index=True, unique=True)
+    bonus_minutes: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

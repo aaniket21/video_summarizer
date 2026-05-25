@@ -16,6 +16,7 @@ import { getExtensionPayload } from "@/lib/extensionLink";
 import { parseBatchUrls } from "@/lib/batchUrls";
 import { AuthPanel } from "@/components/AuthPanel";
 import { useAuth } from "@/hooks/useAuth";
+import { t, UI_LANGUAGE_OPTIONS, type UiLanguage } from "@/lib/i18n";
 import {
   buildChatAnswer,
   buildGoogleDocsExport,
@@ -93,6 +94,7 @@ export default function Home() {
   const [isDragging, setIsDragging] = useState(false);
   const [summaryStyle, setSummaryStyle] = useState<StudyStyle>("student_notes");
   const [outputLanguage, setOutputLanguage] = useState("en");
+  const [uiLanguage, setUiLanguage] = useState<UiLanguage>("en");
   const [chatQuestion, setChatQuestion] = useState("");
   const [chatAnswer, setChatAnswer] = useState("");
   const [chatCitations, setChatCitations] = useState<{ source: "transcript" | "notes" | "section"; index: number; text: string }[]>([]);
@@ -123,9 +125,21 @@ export default function Home() {
   }, [setTheme]);
 
   useEffect(() => {
+    const saved = typeof window !== "undefined" ? localStorage.getItem("aitv_ui_lang") : null;
+    if (saved === "en" || saved === "hi" || saved === "ta" || saved === "te") {
+      setUiLanguage(saved);
+    }
+  }, []);
+
+  useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
     localStorage.setItem("aitv_theme_v1", theme);
   }, [theme]);
+
+  useEffect(() => {
+    document.documentElement.lang = uiLanguage;
+    localStorage.setItem("aitv_ui_lang", uiLanguage);
+  }, [uiLanguage]);
 
   useEffect(() => {
     setHistory(loadHistoryFromLocalStorage());
@@ -630,16 +644,16 @@ export default function Home() {
               transition={{ duration: 0.35 }}
               className="card rounded-2xl p-6"
             >
-              <h2 className="font-semibold text-lg">Input</h2>
+              <h2 className="font-semibold text-lg">{t("inputTitle", uiLanguage)}</h2>
               <p className="text-sm text-[var(--muted)] mt-1">
-                Use either a URL or a video file. Drag-and-drop is supported.
+                {t("inputSubtitle", uiLanguage)}
               </p>
 
               <div className="mt-5 grid grid-cols-1 gap-4">
                 <label className="block">
                   <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium">Video URL</span>
-                    <span className="text-xs text-[var(--muted)]">Batch supported (one URL per line)</span>
+                    <span className="text-sm font-medium">{t("videoUrl", uiLanguage)}</span>
+                    <span className="text-xs text-[var(--muted)]">{t("batchHelp", uiLanguage)}</span>
                   </div>
                   <textarea
                     value={url}
@@ -650,9 +664,9 @@ export default function Home() {
                   />
                 </label>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                   <label className="block">
-                    <div className="text-sm font-medium">Note style</div>
+                    <div className="text-sm font-medium">{t("noteStyle", uiLanguage)}</div>
                     <select
                       value={summaryStyle}
                       onChange={(e) => setSummaryStyle(e.target.value as StudyStyle)}
@@ -667,7 +681,7 @@ export default function Home() {
                   </label>
 
                   <label className="block">
-                    <div className="text-sm font-medium">Output language</div>
+                    <div className="text-sm font-medium">{t("outputLanguage", uiLanguage)}</div>
                     <select
                       value={outputLanguage}
                       onChange={(e) => setOutputLanguage(e.target.value)}
@@ -682,6 +696,21 @@ export default function Home() {
                       <option value="ar">Arabic</option>
                       <option value="zh">Chinese (Simplified)</option>
                       <option value="ja">Japanese</option>
+                    </select>
+                  </label>
+
+                  <label className="block">
+                    <div className="text-sm font-medium">{t("uiLanguage", uiLanguage)}</div>
+                    <select
+                      value={uiLanguage}
+                      onChange={(e) => setUiLanguage(e.target.value as UiLanguage)}
+                      className="mt-2 w-full rounded-xl border border-[var(--border)] bg-transparent px-4 py-3 outline-none focus:ring-2 focus:ring-teal-500/30"
+                    >
+                      {UI_LANGUAGE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
                     </select>
                   </label>
                 </div>
@@ -712,9 +741,9 @@ export default function Home() {
                 >
                   <div className="flex items-start justify-between gap-4">
                     <div>
-                      <div className="text-sm font-medium">Upload video</div>
+                      <div className="text-sm font-medium">{t("uploadVideo", uiLanguage)}</div>
                       <div className="text-xs text-[var(--muted)] mt-1">
-                        Default browser FFmpeg limit is ~200MB. For larger videos, use URL + server fallback.
+                        {t("uploadHelp", uiLanguage)}
                       </div>
                     </div>
                     <div className="text-xs text-[var(--muted)]">
@@ -759,7 +788,7 @@ export default function Home() {
                     }}
                     className="flex items-center gap-2 px-5 py-3 rounded-xl bg-teal-600 hover:bg-teal-600/90 text-white transition disabled:opacity-60 disabled:hover:bg-teal-600"
                   >
-                    {job?.status === "running" ? "Processing..." : "Start processing"}
+                    {job?.status === "running" ? t("processing", uiLanguage) : t("startProcessing", uiLanguage)}
                   </button>
 
                   <button
@@ -767,7 +796,7 @@ export default function Home() {
                     disabled={job?.status !== "running"}
                     className="px-5 py-3 rounded-xl border border-[var(--border)] bg-[var(--card)] hover:bg-white/10 dark:hover:bg-white/10 transition disabled:opacity-60"
                   >
-                    Cancel
+                    {t("cancel", uiLanguage)}
                   </button>
 
                   <button
@@ -781,7 +810,7 @@ export default function Home() {
                     }}
                     className="px-5 py-3 rounded-xl border border-[var(--border)] bg-transparent hover:bg-white/5 dark:hover:bg-white/5 transition"
                   >
-                    Clear
+                    {t("clear", uiLanguage)}
                   </button>
                 </div>
 
@@ -799,17 +828,17 @@ export default function Home() {
             >
               <div className="flex items-center justify-between gap-4">
                 <div>
-                  <h2 className="font-semibold text-lg">Progress</h2>
+                  <h2 className="font-semibold text-lg">{t("progressTitle", uiLanguage)}</h2>
                   <p className="text-sm text-[var(--muted)] mt-1">
                     {job?.status === "running"
-                      ? "Watching each pipeline step in real time."
+                      ? t("progressRunning", uiLanguage)
                       : job?.status === "completed"
-                        ? "Done. Outputs are ready."
-                        : "Ready when you are."}
+                        ? t("progressCompleted", uiLanguage)
+                        : t("progressIdle", uiLanguage)}
                   </p>
                 </div>
                 <div className="text-right">
-                  <div className="text-sm text-[var(--muted)]">Overall</div>
+                  <div className="text-sm text-[var(--muted)]">{t("overall", uiLanguage)}</div>
                   <div className="font-semibold text-xl">{job?.progress ?? 0}%</div>
                 </div>
               </div>

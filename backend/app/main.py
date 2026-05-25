@@ -24,6 +24,7 @@ from .db.repository import SQLAlchemyJobRepository, JobStatus
 from .db.billing_repository import BillingRepository
 from .db.integrations_repository import IntegrationsRepository
 from .db.team_repository import TeamRepository
+from .db.referral_repository import ReferralRepository
 from .db.models import JobModel, TeamRole
 from .llm import providers as llm_providers
 from .llm.study_tools import build_chat_answer, normalize_study_pack
@@ -151,6 +152,156 @@ def generate_api_key() -> tuple[str, str, str]:
 
 def generate_webhook_secret() -> str:
     return secrets.token_urlsafe(32)
+
+
+@app.get("/api/v1/lti/config")
+async def get_lti_config():
+    issuer = os.getenv("LTI_ISSUER", "")
+    client_id = os.getenv("LTI_CLIENT_ID", "")
+    auth_login_url = os.getenv("LTI_AUTH_LOGIN_URL", "")
+    redirect_url = os.getenv("LTI_REDIRECT_URL", "")
+    jwks_url = os.getenv("LTI_JWKS_URL", "")
+
+    return JSONResponse({
+        "issuer": issuer,
+        "client_id": client_id,
+        "auth_login_url": auth_login_url,
+        "redirect_url": redirect_url,
+        "jwks_url": jwks_url,
+    })
+
+
+@app.get("/api/v1/lti/jwks")
+async def get_lti_jwks():
+    return JSONResponse({"keys": []})
+
+
+@app.get("/api/v1/optimization/config")
+async def get_cost_optimization_config():
+    enabled = os.getenv("COST_OPT_ENABLED", "false").lower() == "true"
+    model = os.getenv("COST_OPT_MODEL", "")
+    provider = os.getenv("COST_OPT_PROVIDER", "")
+    return JSONResponse({
+        "enabled": enabled,
+        "model": model,
+        "provider": provider,
+    })
+
+
+@app.post("/api/v1/lti/launch")
+async def lti_launch(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    id_token = body.get("id_token")
+    if not id_token:
+        return JSONResponse({"error": "Missing id_token"}, status_code=400)
+
+    return JSONResponse({"status": "ok"})
+
+
+@app.post("/api/v1/referrals/code", status_code=201)
+async def create_referral_code(
+    authorization: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        claims = require_auth(authorization)
+    except (PermissionError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=401)
+
+    user_id = claims.get("sub")
+    if not user_id:
+        return JSONResponse({"error": "Invalid token: missing sub claim"}, status_code=401)
+
+    repo = ReferralRepository(db)
+    record = await repo.create_or_get_code(user_id)
+    return JSONResponse({"code": record.code}, status_code=201)
+
+
+@app.get("/api/v1/referrals/code")
+async def get_referral_code(
+    authorization: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        claims = require_auth(authorization)
+    except (PermissionError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=401)
+
+    user_id = claims.get("sub")
+    if not user_id:
+        return JSONResponse({"error": "Invalid token: missing sub claim"}, status_code=401)
+
+    repo = ReferralRepository(db)
+    record = await repo.get_code_for_user(user_id)
+    if not record:
+        return JSONResponse({"error": "Referral code not found"}, status_code=404)
+    return JSONResponse({"code": record.code})
+
+
+@app.post("/api/v1/referrals/redeem")
+async def redeem_referral(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        claims = require_auth(authorization)
+    except (PermissionError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=401)
+
+    user_id = claims.get("sub")
+    if not user_id:
+        return JSONResponse({"error": "Invalid token: missing sub claim"}, status_code=401)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    code = str(body.get("code") or "").strip()
+    if not code:
+        return JSONResponse({"error": "Missing code"}, status_code=400)
+
+    repo = ReferralRepository(db)
+    code_record = await repo.get_code_by_value(code)
+    if not code_record:
+        return JSONResponse({"error": "Invalid referral code"}, status_code=404)
+
+    if code_record.user_id == user_id:
+        return JSONResponse({"error": "Cannot redeem own code"}, status_code=400)
+
+    existing = await repo.get_redemption_for_user(user_id)
+    if existing:
+        return JSONResponse({"error": "Referral already redeemed"}, status_code=400)
+
+    await repo.record_redemption(code_record.user_id, user_id, code)
+    await repo.add_bonus_minutes(code_record.user_id, 60)
+    await repo.add_bonus_minutes(user_id, 60)
+
+    return JSONResponse({"referrer_bonus": 60, "referred_bonus": 60})
+
+
+@app.get("/api/v1/referrals/credits")
+async def get_referral_credits(
+    authorization: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        claims = require_auth(authorization)
+    except (PermissionError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=401)
+
+    user_id = claims.get("sub")
+    if not user_id:
+        return JSONResponse({"error": "Invalid token: missing sub claim"}, status_code=401)
+
+    repo = ReferralRepository(db)
+    record = await repo.get_credit(user_id)
+    return JSONResponse({"bonus_minutes": record.bonus_minutes if record else 0})
 
 
 @app.get("/api/profile")
