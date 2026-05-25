@@ -11,7 +11,7 @@ export default function AccountPage() {
   const [billingBusy, setBillingBusy] = useState(false);
   const [billingError, setBillingError] = useState("");
 
-  async function startCheckout() {
+  async function startCheckout(plan: "student" | "pro") {
     setBillingError("");
     setBillingBusy(true);
     try {
@@ -20,7 +20,7 @@ export default function AccountPage() {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ plan: "student" }),
+          body: JSON.stringify({ plan }),
         },
         accessToken,
       );
@@ -84,19 +84,37 @@ export default function AccountPage() {
 
             <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-6">
               <div className="text-sm text-[var(--muted)]">Billing</div>
-              <div className="text-xl font-semibold mt-2">Student plan</div>
+              <div className="text-xl font-semibold mt-2">Plans</div>
               <div className="mt-2 text-sm text-[var(--muted)]">
                 Unlock longer videos, more exports, and higher monthly limits.
               </div>
-              <div className="mt-4 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  disabled={billingBusy}
-                  onClick={startCheckout}
-                  className="rounded-xl bg-slate-900 text-white px-4 py-2 text-sm hover:bg-slate-800 transition disabled:opacity-60"
-                >
-                  Upgrade to Student
-                </button>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <div className="rounded-xl border border-[var(--border)] p-4">
+                  <div className="font-medium">Student</div>
+                  <div className="text-xs text-[var(--muted)] mt-1">Longer videos and core exports.</div>
+                  <button
+                    type="button"
+                    disabled={billingBusy}
+                    onClick={() => startCheckout("student")}
+                    className="mt-3 w-full rounded-xl bg-slate-900 text-white px-4 py-2 text-sm hover:bg-slate-800 transition disabled:opacity-60"
+                  >
+                    Upgrade to Student
+                  </button>
+                </div>
+                <div className="rounded-xl border border-[var(--border)] p-4">
+                  <div className="font-medium">Pro</div>
+                  <div className="text-xs text-[var(--muted)] mt-1">Batch processing + advanced exports.</div>
+                  <button
+                    type="button"
+                    disabled={billingBusy}
+                    onClick={() => startCheckout("pro")}
+                    className="mt-3 w-full rounded-xl bg-teal-600 text-white px-4 py-2 text-sm hover:bg-teal-600/90 transition disabled:opacity-60"
+                  >
+                    Upgrade to Pro
+                  </button>
+                </div>
+              </div>
+              <div className="mt-4">
                 <button
                   type="button"
                   disabled={billingBusy}

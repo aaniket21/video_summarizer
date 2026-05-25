@@ -119,6 +119,24 @@ async def test_billing_checkout_returns_url(test_db, auth_header, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_billing_checkout_supports_pro_plan(test_db, auth_header, monkeypatch):
+    from backend.app import main as main_module
+
+    monkeypatch.setattr(main_module, "stripe", _DummyStripe)
+    os.environ["STRIPE_SECRET_KEY"] = "sk_test"
+    os.environ["STRIPE_PRO_PRICE_ID"] = "price_pro"
+    os.environ["STRIPE_SUCCESS_URL"] = "https://app.test/success"
+    os.environ["STRIPE_CANCEL_URL"] = "https://app.test/cancel"
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        res = await ac.post("/api/v1/billing/checkout", json={"plan": "pro"}, headers=auth_header)
+
+    assert res.status_code == 200
+    payload = res.json()
+    assert payload["url"] == "https://stripe.test/checkout"
+
+
+@pytest.mark.asyncio
 async def test_billing_portal_returns_url(test_db, auth_header, monkeypatch):
     from backend.app import main as main_module
 

@@ -19,9 +19,17 @@
         </label>
         <span id="autoRefreshLabel" class="auto-refresh">Auto-refresh: On (2s)</span>
       </div>
+      <div class="settings">
+        <label class="settings-label" for="webAppUrlInput">LectureLens web app</label>
+        <div class="settings-row">
+          <input id="webAppUrlInput" type="text" placeholder="http://localhost:3000" />
+          <button id="saveWebAppUrlButton" type="button">Save</button>
+        </div>
+      </div>
       <p id="statusText" class="status">Checking current tab...</p>
       <ul id="linksList" class="links"></ul>
     </main>
+    <script src="bridge.js"></script>
     <script src="sidebar.js"></script>
   </body>
 </html>

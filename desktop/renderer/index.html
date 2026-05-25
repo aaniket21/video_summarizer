@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LectureLens Desktop</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="logo">LL</div>
+          <div>
+            <div class="title">LectureLens</div>
+            <div class="subtitle">Desktop Queue</div>
+          </div>
+        </div>
+        <nav class="nav">
+          <button class="nav-item is-active" data-section="queue">Queue</button>
+          <button class="nav-item" data-section="history">History</button>
+          <button class="nav-item" data-section="models">Models</button>
+          <button class="nav-item" data-section="hardware">Hardware</button>
+          <button class="nav-item" data-section="settings">Settings</button>
+        </nav>
+      </aside>
+
+      <main class="main">
+        <section class="panel" data-panel="queue">
+          <header class="panel-header">
+            <div>
+              <h1>Job Queue</h1>
+              <p>Paste a URL or accept jobs sent from the browser extension.</p>
+            </div>
+            <div class="status-pill" id="bridgeStatus">Bridge: Listening</div>
+          </header>
+
+          <div class="card">
+            <div class="field">
+              <label for="urlInput">Video URL (one per line)</label>
+              <textarea id="urlInput" rows="3" placeholder="https://..."></textarea>
+            </div>
+            <div class="actions">
+              <button id="addJobBtn" class="primary">Add to queue</button>
+              <button id="clearInputBtn" class="ghost">Clear</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <h2>Queued Jobs</h2>
+              <span id="queueCount">0 jobs</span>
+            </div>
+            <div id="queueList" class="queue-list"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <h2>Engine Logs</h2>
+              <span>Python subprocess</span>
+            </div>
+            <pre id="engineLogs" class="logs"></pre>
+          </div>
+        </section>
+
+        <section class="panel" data-panel="history" hidden>
+          <header class="panel-header">
+            <div>
+              <h1>Cloud History</h1>
+              <p>Synced jobs from your LectureLens account.</p>
+            </div>
+            <button id="refreshHistoryBtn" class="ghost">Refresh</button>
+          </header>
+
+          <div class="card">
+            <div class="card-header">
+              <h2>Recent Jobs</h2>
+              <span id="cloudStatus">Not connected</span>
+            </div>
+            <div id="cloudHistoryList" class="queue-list"></div>
+          </div>
+        </section>
+
+        <section class="panel" data-panel="models" hidden>
+          <header class="panel-header">
+            <div>
+              <h1>Model Manager</h1>
+              <p>Download and switch Whisper models per hardware profile.</p>
+            </div>
+          </header>
+          <div class="card">
+            <div id="modelList" class="model-grid"></div>
+          </div>
+        </section>
+
+        <section class="panel" data-panel="hardware" hidden>
+          <header class="panel-header">
+            <div>
+              <h1>Hardware Detection</h1>
+              <p>We tailor defaults based on your CPU, GPU, and memory.</p>
+            </div>
+          </header>
+          <div class="card" id="hardwareCard"></div>
+        </section>
+
+        <section class="panel" data-panel="settings" hidden>
+          <header class="panel-header">
+            <div>
+              <h1>Settings</h1>
+              <p>Configure sync and routing defaults.</p>
+            </div>
+          </header>
+          <div class="card">
+            <div class="field">
+              <label for="apiBaseUrl">API base URL</label>
+              <input id="apiBaseUrl" type="text" placeholder="http://localhost:8000" />
+            </div>
+            <div class="field">
+              <label for="accessToken">Access token</label>
+              <input id="accessToken" type="password" placeholder="Paste your bearer token" />
+            </div>
+            <div class="field">
+              <label for="webAppUrl">Web app URL</label>
+              <input id="webAppUrl" type="text" placeholder="http://localhost:3000" />
+            </div>
+            <div class="actions">
+              <button id="saveSettingsBtn" class="primary">Save settings</button>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="cloudSync.js"></script>
+    <script src="batchUrls.js"></script>
+    <script src="renderer.js"></script>
+  </body>
+</html>

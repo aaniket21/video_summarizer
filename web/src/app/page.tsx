@@ -12,6 +12,8 @@ import { loadHistoryFromLocalStorage, loadHistoryItem, saveHistoryItem } from "@
 import { generatePdfFromMarkdown } from "@/lib/pdf";
 import { apiFetch } from "@/lib/api";
 import { fetchCloudHistory, type CloudHistoryItem } from "@/lib/cloudHistory";
+import { getExtensionPayload } from "@/lib/extensionLink";
+import { parseBatchUrls } from "@/lib/batchUrls";
 import { AuthPanel } from "@/components/AuthPanel";
 import { useAuth } from "@/hooks/useAuth";
 import type { JobInput, JobStep } from "@/store/useSummarizerStore";
@@ -88,6 +90,8 @@ export default function Home() {
   const [cloudHistory, setCloudHistory] = useState<CloudHistoryItem[]>([]);
   const [cloudHistoryLoading, setCloudHistoryLoading] = useState(false);
   const [cloudHistoryError, setCloudHistoryError] = useState("");
+
+  const extensionHandledRef = useRef(false);
 
   const abortRef = useRef<AbortController | null>(null);
   const cancelledRef = useRef(false);
@@ -478,7 +482,45 @@ export default function Home() {
     }
   }
 
-  const canStart = Boolean((url.trim().length > 0 && !file) || (file !== null && url.trim().length === 0));
+  async function processBatch(urls: string[]) {
+    cancelledRef.current = false;
+    for (let i = 0; i < urls.length; i += 1) {
+      if (cancelledRef.current) break;
+      const nextUrl = urls[i];
+      setUrl(nextUrl);
+      appendLog(`Batch ${i + 1}/${urls.length}: ${nextUrl}`);
+      await processJob({ kind: "url", source: nextUrl });
+    }
+  }
+
+  useEffect(() => {
+    if (extensionHandledRef.current) return;
+
+    const payload = getExtensionPayload(window.location.href);
+    if (!payload.url) return;
+
+    extensionHandledRef.current = true;
+    setUrl(payload.url);
+    setFile(null);
+
+    if (job?.status !== "running") {
+      processJob({ kind: "url", source: payload.url });
+    }
+
+    try {
+      const nextUrl = new URL(window.location.href);
+      nextUrl.searchParams.delete("url");
+      nextUrl.searchParams.delete("source");
+      window.history.replaceState({}, "", nextUrl.toString());
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const parsedUrls = parseBatchUrls(url);
+  const canStart = Boolean(
+    (parsedUrls.length > 0 && !file) || (file !== null && url.trim().length === 0)
+  );
 
   const notesMarkdown = job?.notesMarkdown || "";
   const transcriptText = job?.transcript || "";
@@ -552,7 +594,7 @@ export default function Home() {
                 <label className="block">
                   <div className="flex items-center justify-between">
                     <span className="text-sm font-medium">Video URL</span>
-                    <span className="text-xs text-[var(--muted)]">Server fallback for blocked sources</span>
+                    <span className="text-xs text-[var(--muted)]">Batch supported (one URL per line)</span>
                   </div>
                   <textarea
                     value={url}
@@ -619,9 +661,20 @@ export default function Home() {
                   <button
                     disabled={!canStart || job?.status === "running"}
                     onClick={() => {
-                      const urlInput = url.trim();
-                      if (urlInput) processJob({ kind: "url", source: urlInput });
-                      else if (file) processJob({ kind: "file", source: file.name, fileName: file.name } as any);
+                      if (file) {
+                        processJob({ kind: "file", source: file.name, fileName: file.name } as any);
+                        return;
+                      }
+
+                      const urls = parseBatchUrls(url);
+                      if (urls.length > 1) {
+                        processBatch(urls);
+                        return;
+                      }
+
+                      if (urls[0]) {
+                        processJob({ kind: "url", source: urls[0] });
+                      }
                     }}
                     className="flex items-center gap-2 px-5 py-3 rounded-xl bg-teal-600 hover:bg-teal-600/90 text-white transition disabled:opacity-60 disabled:hover:bg-teal-600"
                   >

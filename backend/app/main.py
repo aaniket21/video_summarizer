@@ -92,13 +92,18 @@ def require_stripe_client():
 def get_price_id_for_plan(plan: str) -> str:
     if plan == "student":
         return os.getenv("STRIPE_STUDENT_PRICE_ID", "")
+    if plan == "pro":
+        return os.getenv("STRIPE_PRO_PRICE_ID", "")
     return ""
 
 
 def map_price_id_to_plan(price_id: str) -> Optional[str]:
     student_price = os.getenv("STRIPE_STUDENT_PRICE_ID", "")
+    pro_price = os.getenv("STRIPE_PRO_PRICE_ID", "")
     if student_price and price_id == student_price:
         return "student"
+    if pro_price and price_id == pro_price:
+        return "pro"
     return None
 
 
@@ -312,7 +317,7 @@ async def create_billing_checkout(
         body = {}
 
     plan = str(body.get("plan") or "").strip().lower()
-    if plan != "student":
+    if plan not in {"student", "pro"}:
         return JSONResponse({"error": "Unsupported plan"}, status_code=400)
 
     price_id = get_price_id_for_plan(plan)

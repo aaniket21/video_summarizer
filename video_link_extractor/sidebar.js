@@ -6,13 +6,60 @@ const linksList = document.getElementById("linksList");
 const refreshButton = document.getElementById("refreshButton");
 const hideTechnicalToggle = document.getElementById("hideTechnicalToggle");
 const autoRefreshLabel = document.getElementById("autoRefreshLabel");
+const webAppUrlInput = document.getElementById("webAppUrlInput");
+const saveWebAppUrlButton = document.getElementById("saveWebAppUrlButton");
 
 const AUTO_REFRESH_MS = 2000;
+const DEFAULT_WEB_APP_URL = "http://localhost:3000";
 let isLoading = false;
 let autoRefreshTimer = null;
 
 function setStatus(text) {
   statusText.textContent = text;
+}
+
+function loadWebAppUrl() {
+  chrome.runtime.sendMessage({ type: "getWebAppBaseUrl" }, (response) => {
+    const value = response?.url || DEFAULT_WEB_APP_URL;
+    if (webAppUrlInput) {
+      webAppUrlInput.value = value;
+    }
+  });
+}
+
+function saveWebAppUrl() {
+  if (!webAppUrlInput) return;
+  const value = webAppUrlInput.value.trim();
+  chrome.runtime.sendMessage({ type: "setWebAppBaseUrl", url: value }, (response) => {
+    if (response?.ok) {
+      webAppUrlInput.value = response.url;
+      setStatus("Saved LectureLens web app URL.");
+    } else {
+      setStatus(response?.error || "Invalid web app URL.");
+    }
+  });
+}
+
+function sendToDesktop(url) {
+  setStatus("Sending to desktop app...");
+  chrome.runtime.sendMessage({ type: "sendToDesktop", url }, (response) => {
+    if (response?.ok) {
+      setStatus("Sent to desktop app.");
+    } else {
+      setStatus(response?.error || "Unable to reach desktop app.");
+    }
+  });
+}
+
+function sendToWeb(url) {
+  setStatus("Opening LectureLens web app...");
+  chrome.runtime.sendMessage({ type: "openWebApp", url }, (response) => {
+    if (response?.ok) {
+      setStatus("Opened in LectureLens web app.");
+    } else {
+      setStatus(response?.error || "Unable to open LectureLens web app.");
+    }
+  });
 }
 
 function clearList() {
@@ -124,7 +171,20 @@ function createLinkItem(linkObj, index) {
     }
   });
   meta.append(source, copyButton);
-  item.append(top, urlText, meta);
+  const actions = document.createElement("div");
+  actions.className = "link-actions";
+  const sendWebButton = document.createElement("button");
+  sendWebButton.className = "send-btn";
+  sendWebButton.type = "button";
+  sendWebButton.textContent = "Send to Web";
+  sendWebButton.addEventListener("click", () => sendToWeb(linkObj.url));
+  const sendDesktopButton = document.createElement("button");
+  sendDesktopButton.className = "send-btn secondary";
+  sendDesktopButton.type = "button";
+  sendDesktopButton.textContent = "Send to Desktop";
+  sendDesktopButton.addEventListener("click", () => sendToDesktop(linkObj.url));
+  actions.append(sendWebButton, sendDesktopButton);
+  item.append(top, urlText, meta, actions);
   return item;
 }
 
@@ -224,6 +284,9 @@ refreshButton.addEventListener("click", () => {
 hideTechnicalToggle?.addEventListener("change", () => {
   loadLinks();
 });
+saveWebAppUrlButton?.addEventListener("click", () => {
+  saveWebAppUrl();
+});
 function startAutoRefresh() {
   autoRefreshTimer = window.setInterval(() => {
     loadLinks();
@@ -237,3 +300,4 @@ window.addEventListener("unload", () => {
 });
 loadLinks();
 startAutoRefresh();
+loadWebAppUrl();

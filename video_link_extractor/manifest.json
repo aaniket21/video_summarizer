@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "Actual Video Link Extractor",
-  "version": "1.0.0",
-  "description": "Detect and display playable media URLs from the current tab.",
-  "permissions": ["activeTab", "tabs", "webRequest", "sidePanel"],
+  "name": "LectureLens Extension",
+  "version": "2.0.0",
+  "description": "Detect media links and send them to LectureLens (web or desktop).",
+  "permissions": ["activeTab", "tabs", "webRequest", "sidePanel", "storage"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"

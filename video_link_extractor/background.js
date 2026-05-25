@@ -1,3 +1,6 @@
+importScripts("bridge.js");
+
+const DEFAULT_WEB_APP_URL = "http://localhost:3000";
 const tabMediaLinks = new Map();
 
 function configureSidePanelBehavior() {
@@ -100,6 +103,94 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message !== "object") {
     return;
+  }
+
+  if (message.type === "getWebAppBaseUrl") {
+    chrome.storage.local.get({ webAppBaseUrl: DEFAULT_WEB_APP_URL }, (result) => {
+      sendResponse({ ok: true, url: result.webAppBaseUrl || DEFAULT_WEB_APP_URL });
+    });
+    return true;
+  }
+
+  if (message.type === "setWebAppBaseUrl") {
+    const raw = String(message.url || "");
+    const sanitized = globalThis.LectureLensBridge?.sanitizeBaseUrl(raw) || "";
+    if (!sanitized) {
+      sendResponse({ ok: false, error: "Invalid URL" });
+      return;
+    }
+    chrome.storage.local.set({ webAppBaseUrl: sanitized }, () => {
+      sendResponse({ ok: true, url: sanitized });
+    });
+    return true;
+  }
+
+  if (message.type === "openWebApp") {
+    const videoUrl = String(message.url || "");
+    chrome.storage.local.get({ webAppBaseUrl: DEFAULT_WEB_APP_URL }, (result) => {
+      const baseUrl = result.webAppBaseUrl || DEFAULT_WEB_APP_URL;
+      const targetUrl = globalThis.LectureLensBridge?.buildWebAppJobUrl(baseUrl, videoUrl) || "";
+      if (!targetUrl) {
+        sendResponse({ ok: false, error: "Invalid web app URL" });
+        return;
+      }
+
+      let origin = "";
+      try {
+        origin = new URL(targetUrl).origin;
+      } catch {
+        sendResponse({ ok: false, error: "Invalid web app URL" });
+        return;
+      }
+
+      chrome.tabs.query({ url: `${origin}/*` }, (tabs) => {
+        if (tabs && tabs.length > 0 && tabs[0].id !== undefined) {
+          chrome.tabs.update(tabs[0].id, { url: targetUrl, active: true });
+        } else {
+          chrome.tabs.create({ url: targetUrl, active: true });
+        }
+        sendResponse({ ok: true, url: targetUrl });
+      });
+    });
+    return true;
+  }
+
+  if (message.type === "sendToDesktop") {
+    const videoUrl = String(message.url || "");
+    let settled = false;
+
+    try {
+      const socket = new WebSocket("ws://localhost:27182");
+      const timeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        try {
+          socket.close();
+        } catch {
+          // ignore
+        }
+        sendResponse({ ok: false, error: "Desktop app is not running." });
+      }, 1500);
+
+      socket.addEventListener("open", () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        socket.send(JSON.stringify({ url: videoUrl }));
+        socket.close();
+        sendResponse({ ok: true });
+      });
+
+      socket.addEventListener("error", () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        sendResponse({ ok: false, error: "Unable to reach desktop app." });
+      });
+    } catch {
+      sendResponse({ ok: false, error: "Unable to reach desktop app." });
+    }
+    return true;
   }
 
   if (message.type === "getTabLinks") {
