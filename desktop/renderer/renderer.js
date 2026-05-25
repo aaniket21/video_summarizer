@@ -14,6 +14,9 @@ const accessToken = document.getElementById("accessToken");
 const refreshHistoryBtn = document.getElementById("refreshHistoryBtn");
 const cloudStatus = document.getElementById("cloudStatus");
 const cloudHistoryList = document.getElementById("cloudHistoryList");
+const watchFolderInput = document.getElementById("watchFolder");
+const pickWatchFolderBtn = document.getElementById("pickWatchFolderBtn");
+const watchFolderStatus = document.getElementById("watchFolderStatus");
 
 const navItems = document.querySelectorAll(".nav-item");
 const panels = document.querySelectorAll(".panel");
@@ -135,6 +138,23 @@ function setCloudStatus(text) {
   }
 }
 
+function renderWatchStatus(payload) {
+  if (!watchFolderStatus) return;
+  if (!payload) {
+    watchFolderStatus.textContent = "Watch: Disabled";
+    return;
+  }
+  if (payload.status === "listening") {
+    watchFolderStatus.textContent = `Watch: Listening (${payload.path})`;
+    return;
+  }
+  if (payload.status === "error") {
+    watchFolderStatus.textContent = `Watch: Error (${payload.message || "Unknown"})`;
+    return;
+  }
+  watchFolderStatus.textContent = "Watch: Disabled";
+}
+
 async function refreshCloudHistory() {
   const baseUrl = apiBaseUrl?.value?.trim() || "";
   const token = accessToken?.value?.trim() || "";
@@ -195,6 +215,12 @@ async function init() {
   if (apiBaseUrl) apiBaseUrl.value = savedApiUrl;
   if (accessToken) accessToken.value = savedToken;
 
+  const currentWatchFolder = await window.api.getWatchFolder();
+  if (watchFolderInput) {
+    watchFolderInput.value = currentWatchFolder || "";
+  }
+  renderWatchStatus(currentWatchFolder ? { status: "listening", path: currentWatchFolder } : null);
+
   refreshCloudHistory();
 }
 
@@ -227,6 +253,10 @@ window.api.onBridgeStatus((payload) => {
   renderBridgeStatus(payload);
 });
 
+window.api.onWatchStatus((payload) => {
+  renderWatchStatus(payload);
+});
+
 window.api.onEngineLog((line) => {
   engineLogs.textContent = `${engineLogs.textContent}\n${line}`.trim();
 });
@@ -247,6 +277,13 @@ saveSettingsBtn.addEventListener("click", () => {
   }
 
   refreshCloudHistory();
+});
+
+pickWatchFolderBtn?.addEventListener("click", async () => {
+  const nextFolder = await window.api.pickWatchFolder();
+  if (watchFolderInput) {
+    watchFolderInput.value = nextFolder || "";
+  }
 });
 
 refreshHistoryBtn?.addEventListener("click", () => {

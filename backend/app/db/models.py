@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID, uuid4
 from typing import Optional, List, Dict, Any
-from sqlalchemy import String, DateTime, JSON, Enum as SQLEnum
+from sqlalchemy import String, DateTime, JSON, Enum as SQLEnum, Boolean, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .session import Base
 import enum
@@ -13,6 +13,12 @@ class JobStatus(str, enum.Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+
+class TeamRole(str, enum.Enum):
+    ADMIN = "admin"
+    MEMBER = "member"
+    VIEWER = "viewer"
 
 class JobModel(Base):
     __tablename__ = "jobs"
@@ -66,3 +72,101 @@ class BillingCustomerModel(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
     )
+
+
+class TeamModel(Base):
+    __tablename__ = "teams"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    name: Mapped[str] = mapped_column(String, index=True)
+    owner_user_id: Mapped[str] = mapped_column(String, index=True)
+    plan: Mapped[str] = mapped_column(String, default="team")
+    seat_count: Mapped[int] = mapped_column(Integer, default=3)
+    billing_status: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    branding_json: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class TeamMemberModel(Base):
+    __tablename__ = "team_members"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    team_id: Mapped[UUID] = mapped_column(index=True)
+    user_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    email: Mapped[str] = mapped_column(String, index=True)
+    role: Mapped[TeamRole] = mapped_column(SQLEnum(TeamRole), default=TeamRole.MEMBER)
+    status: Mapped[str] = mapped_column(String, default="invited")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class CollectionModel(Base):
+    __tablename__ = "collections"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    team_id: Mapped[UUID] = mapped_column(index=True)
+    name: Mapped[str] = mapped_column(String)
+    description: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    created_by: Mapped[str] = mapped_column(String, index=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ApiKeyModel(Base):
+    __tablename__ = "api_keys"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    user_id: Mapped[str] = mapped_column(String, index=True)
+    team_id: Mapped[Optional[UUID]] = mapped_column(nullable=True, index=True)
+    label: Mapped[str] = mapped_column(String)
+    key_prefix: Mapped[str] = mapped_column(String, index=True)
+    key_hash: Mapped[str] = mapped_column(String)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class WebhookModel(Base):
+    __tablename__ = "webhooks"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    user_id: Mapped[str] = mapped_column(String, index=True)
+    team_id: Mapped[Optional[UUID]] = mapped_column(nullable=True, index=True)
+    url: Mapped[str] = mapped_column(String)
+    events: Mapped[List[str]] = mapped_column(JSON, default=list)
+    secret: Mapped[str] = mapped_column(String)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class SsoProviderModel(Base):
+    __tablename__ = "sso_providers"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    team_id: Mapped[UUID] = mapped_column(index=True)
+    provider: Mapped[str] = mapped_column(String)
+    domain: Mapped[str] = mapped_column(String)
+    client_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class StudentVerificationModel(Base):
+    __tablename__ = "student_verifications"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    user_id: Mapped[str] = mapped_column(String, index=True)
+    status: Mapped[str] = mapped_column(String, default="pending")
+    provider: Mapped[str] = mapped_column(String, default="sheerid")
+    reference_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)

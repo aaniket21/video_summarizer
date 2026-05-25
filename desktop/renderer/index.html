@@ -129,6 +129,14 @@
               <label for="webAppUrl">Web app URL</label>
               <input id="webAppUrl" type="text" placeholder="http://localhost:3000" />
             </div>
+            <div class="field">
+              <label for="watchFolder">Watch folder</label>
+              <div class="field-row">
+                <input id="watchFolder" type="text" placeholder="Choose a folder" readonly />
+                <button id="pickWatchFolderBtn" class="ghost" type="button">Choose</button>
+              </div>
+              <div class="muted-hint" id="watchFolderStatus">Watch: Disabled</div>
+            </div>
             <div class="actions">
               <button id="saveSettingsBtn" class="primary">Save settings</button>
             </div>

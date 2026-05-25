@@ -24,6 +24,8 @@ export async function POST(req: Request) {
     const body = await req.json();
     const transcript = sanitize(String(body?.transcript || ""));
     const chapters = Array.isArray(body?.chapters) ? body.chapters : [];
+    const style = String(body?.style || body?.summary_style || "student_notes").trim() || "student_notes";
+    const outputLanguage = String(body?.output_language || body?.outputLanguage || "en").trim() || "en";
 
     if (!process.env.GEMINI_API_KEY) {
       return NextResponse.json(
@@ -46,6 +48,8 @@ export async function POST(req: Request) {
 Create polished lecture notes based on the transcript below.
 
 Requirements:
+- Write the notes in ${outputLanguage}.
+- Use the note style: ${style}.
 - Output valid, clean markdown only.
 - Use long paragraphs and readable bullet lists.
 - Avoid decorative markdown clutter such as repeated separators or excessive bold markers.

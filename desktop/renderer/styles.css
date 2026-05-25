@@ -135,6 +135,18 @@ body {
   gap: 8px;
 }
 
+.field-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.muted-hint {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 input,
 textarea {
   background: #0f1722;

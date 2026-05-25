@@ -6,7 +6,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import BillingCustomerModel
+from .models import BillingCustomerModel, StudentVerificationModel
 
 
 class BillingRepository:
@@ -86,6 +86,48 @@ class BillingRepository:
         if current_period_end is not None:
             record.current_period_end = current_period_end
 
+        await self.session.commit()
+        await self.session.refresh(record)
+        return record
+
+    async def get_student_verification(self, user_id: str) -> Optional[StudentVerificationModel]:
+        result = await self.session.execute(
+            select(StudentVerificationModel).where(StudentVerificationModel.user_id == user_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def create_student_verification(
+        self,
+        user_id: str,
+        reference_id: Optional[str] = None,
+    ) -> StudentVerificationModel:
+        existing = await self.get_student_verification(user_id)
+        if existing:
+            existing.status = "pending"
+            if reference_id is not None:
+                existing.reference_id = reference_id
+            await self.session.commit()
+            await self.session.refresh(existing)
+            return existing
+
+        record = StudentVerificationModel(user_id=user_id, reference_id=reference_id)
+        self.session.add(record)
+        await self.session.commit()
+        await self.session.refresh(record)
+        return record
+
+    async def update_student_verification(
+        self,
+        user_id: str,
+        status: str,
+        verified_at: Optional[datetime] = None,
+    ) -> Optional[StudentVerificationModel]:
+        record = await self.get_student_verification(user_id)
+        if not record:
+            return None
+        record.status = status
+        if verified_at is not None:
+            record.verified_at = verified_at
         await self.session.commit()
         await self.session.refresh(record)
         return record

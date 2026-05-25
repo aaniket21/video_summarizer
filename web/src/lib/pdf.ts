@@ -136,8 +136,13 @@ function parseMarkdownToBlocks(md: string): Block[] {
 export async function generatePdfFromMarkdown(args: {
   title: string;
   markdown: string;
+  branding?: {
+    brandName?: string;
+    accentColor?: string;
+    footerText?: string;
+  };
 }): Promise<Uint8Array> {
-  const { title, markdown } = args;
+  const { title, markdown, branding } = args;
   const doc = await PDFDocument.create();
 
   const pageWidth = 595.28; // A4
@@ -152,8 +157,22 @@ export async function generatePdfFromMarkdown(args: {
   const helvBold = await doc.embedFont(StandardFonts.HelveticaBold);
   const courier = await doc.embedFont(StandardFonts.Courier);
 
-  const teal = rgb(0, 0.58, 0.52);
+  const defaultAccent = rgb(0, 0.58, 0.52);
   const textColor = rgb(0.1, 0.16, 0.28);
+  const accentColor = branding?.accentColor
+    ? (() => {
+        const hex = branding.accentColor.trim().replace("#", "");
+        if (hex.length === 6) {
+          const r = parseInt(hex.slice(0, 2), 16) / 255;
+          const g = parseInt(hex.slice(2, 4), 16) / 255;
+          const b = parseInt(hex.slice(4, 6), 16) / 255;
+          if (!Number.isNaN(r) && !Number.isNaN(g) && !Number.isNaN(b)) {
+            return rgb(r, g, b);
+          }
+        }
+        return defaultAccent;
+      })()
+    : defaultAccent;
 
   const maxWidth = pageWidth - marginX * 2;
   let y = pageHeight - marginBottom;
@@ -173,10 +192,10 @@ export async function generatePdfFromMarkdown(args: {
     y,
     size: 20,
     font: helvBold,
-    color: teal,
+    color: accentColor,
   });
   y -= 26;
-  page.drawText("AI Video Lecture Notes", {
+  page.drawText(branding?.brandName || "AI Video Lecture Notes", {
     x: marginX,
     y,
     size: 11,
@@ -343,6 +362,17 @@ export async function generatePdfFromMarkdown(args: {
       y = localY - 6;
       continue;
     }
+  }
+
+  if (branding?.footerText) {
+    const footerPage = doc.getPages()[doc.getPages().length - 1];
+    footerPage.drawText(branding.footerText, {
+      x: marginX,
+      y: marginBottom - 24,
+      size: 9,
+      font: helv,
+      color: rgb(0.35, 0.42, 0.52),
+    });
   }
 
   const bytes = await doc.save();

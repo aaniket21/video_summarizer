@@ -1,14 +1,11 @@
 import os
 import re
-from typing import Callable, Dict, List
+from typing import Any, Callable, Dict, List, Sequence
 
 import httpx
 
 from backend.app.secrets import get_secret
-
-
-def sanitize_text(text: str) -> str:
-    return text.replace("\r\n", "\n").strip()
+from .study_tools import normalize_study_pack, parse_structured_payload, sanitize_text
 
 
 def extract_title_from_markdown(markdown: str) -> str:
@@ -24,32 +21,30 @@ def extract_title_from_markdown(markdown: str) -> str:
     return "AI Video Lecture Notes"
 
 
-def build_prompt(transcript: str, chapters: List[str]) -> str:
+def build_prompt(
+    transcript: str,
+    chapters: Sequence[str],
+    style: str = "student_notes",
+    output_language: str = "en",
+) -> str:
     chapter_text = "\n".join(f"- {c}" for c in chapters) if chapters else "- No strong chapter splits found"
     return (
         f"""
-Create polished lecture notes based on the transcript below.
+Create a structured study pack based on the transcript below.
 
 Requirements:
-- Output valid, clean markdown only.
-- Use long paragraphs and readable bullet lists.
-- Avoid decorative markdown clutter such as repeated separators or excessive bold markers.
-- Make it study-friendly and visually structured for PDF export.
-- Cover all important details, examples, interview angles, and edge cases.
-- Explain complex concepts in a simple way, as if teaching a beginner.
-- For code snippets, use markdown code blocks with appropriate language tags.
-- If the transcript is too short, expand on key concepts with general knowledge.
-- If the transcript is very long, prioritize clarity and conciseness while covering all major points.
-- Include a variety of examples and interview questions that could be asked on the topic.
+- Output valid JSON only.
+- Include these keys: title, tldr, keyConcepts, sections, definitions, quizQuestions, flashcards, notesMarkdown, speakerLabels, chapterCandidates, style, outputLanguage.
+- Write the notes in {output_language}.
+- Use the note style: {style}.
+- Keep quiz questions grounded in the transcript.
+- Include flashcards for important terms and definitions.
+- Include speaker labels when the transcript suggests multiple speakers.
 
 Output format (in this exact order):
-1) Title as a single H1 at the very top (start with "# ")
-2) Heading "Quick Revision"
-3) Heading "Key Concepts"
-4) Heading "Detailed Explanation"
-5) Heading "Examples"
-6) Heading "Interview Questions"
-7) Heading "Summary"
+1) Return one JSON object.
+2) Do not wrap the JSON in markdown fences.
+3) Do not add commentary outside the JSON object.
 
 Potential chapter candidates:
 {chapter_text}
@@ -141,6 +136,25 @@ def _claude_client(prompt: str) -> str:
     return str(content_blocks[0].get("text", ""))
 
 
+def _ollama_client(prompt: str) -> str:
+    model = os.getenv("OLLAMA_MODEL", "llama3.1")
+    base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+        "format": "json",
+    }
+
+    with httpx.Client(timeout=90) as client:
+        response = client.post(f"{base_url.rstrip('/')}/api/generate", json=payload)
+        if response.status_code >= 400:
+            raise RuntimeError(f"Ollama request failed ({response.status_code}).")
+        data = response.json()
+
+    return str(data.get("response", ""))
+
+
 def _generate_markdown(prompt: str, provider: str) -> str:
     if provider == "gemini":
         return _gemini_client(prompt)
@@ -148,29 +162,61 @@ def _generate_markdown(prompt: str, provider: str) -> str:
         return _openai_client(prompt)
     if provider == "claude":
         return _claude_client(prompt)
+    if provider == "ollama":
+        return _ollama_client(prompt)
     raise RuntimeError(f"Unknown LLM provider: {provider}")
 
 
-def _generate_with_provider(provider: str, transcript: str, chapters: List[str]) -> Dict[str, str]:
-    prompt = build_prompt(transcript, chapters)
-    markdown = _generate_markdown(prompt, provider)
-    markdown = sanitize_text(markdown or "")
+def _generate_with_provider(
+    provider: str,
+    transcript: str,
+    chapters: Sequence[str],
+    style: str = "student_notes",
+    output_language: str = "en",
+) -> Dict[str, Any]:
+    prompt = build_prompt(transcript, chapters, style=style, output_language=output_language)
+    raw_response = _generate_markdown(prompt, provider)
+    structured = parse_structured_payload(raw_response)
+
+    if structured:
+        return normalize_study_pack(
+            structured,
+            transcript=transcript,
+            chapters=chapters,
+            style=style,
+            output_language=output_language,
+        )
+
+    markdown = sanitize_text(raw_response or "")
     if not markdown:
         raise RuntimeError("empty response")
-    title = extract_title_from_markdown(markdown)
-    return {"title": title, "notesMarkdown": markdown}
+
+    return normalize_study_pack(
+        {
+            "title": extract_title_from_markdown(markdown),
+            "notesMarkdown": markdown,
+        },
+        transcript=transcript,
+        chapters=chapters,
+        style=style,
+        output_language=output_language,
+    )
 
 
-def generate_with_gemini(transcript: str, chapters: List[str]) -> Dict[str, str]:
-    return _generate_with_provider("gemini", transcript, chapters)
+def generate_with_gemini(transcript: str, chapters: Sequence[str], style: str = "student_notes", output_language: str = "en") -> Dict[str, Any]:
+    return _generate_with_provider("gemini", transcript, chapters, style=style, output_language=output_language)
 
 
-def generate_with_openai(transcript: str, chapters: List[str]) -> Dict[str, str]:
-    return _generate_with_provider("openai", transcript, chapters)
+def generate_with_openai(transcript: str, chapters: Sequence[str], style: str = "student_notes", output_language: str = "en") -> Dict[str, Any]:
+    return _generate_with_provider("openai", transcript, chapters, style=style, output_language=output_language)
 
 
-def generate_with_claude(transcript: str, chapters: List[str]) -> Dict[str, str]:
-    return _generate_with_provider("claude", transcript, chapters)
+def generate_with_claude(transcript: str, chapters: Sequence[str], style: str = "student_notes", output_language: str = "en") -> Dict[str, Any]:
+    return _generate_with_provider("claude", transcript, chapters, style=style, output_language=output_language)
+
+
+def generate_with_ollama(transcript: str, chapters: Sequence[str], style: str = "student_notes", output_language: str = "en") -> Dict[str, Any]:
+    return _generate_with_provider("ollama", transcript, chapters, style=style, output_language=output_language)
 
 
 def _provider_sequence() -> List[str]:
@@ -189,7 +235,7 @@ def _provider_sequence() -> List[str]:
     return [p for p in ordered if p in PROVIDERS]
 
 
-def generate_notes(transcript: str, chapters: List[str]) -> Dict[str, str]:
+def generate_notes(transcript: str, chapters: Sequence[str], style: str = "student_notes", output_language: str = "en") -> Dict[str, Any]:
     errors: List[str] = []
 
     for provider in _provider_sequence():
@@ -197,7 +243,7 @@ def generate_notes(transcript: str, chapters: List[str]) -> Dict[str, str]:
         if not handler:
             continue
         try:
-            return handler(transcript, chapters)
+            return handler(transcript, chapters, style=style, output_language=output_language)
         except Exception as exc:
             errors.append(f"{provider}: {exc}")
             continue
@@ -206,8 +252,9 @@ def generate_notes(transcript: str, chapters: List[str]) -> Dict[str, str]:
     raise RuntimeError(f"All providers failed: {error_text}")
 
 
-PROVIDERS: Dict[str, Callable[[str, List[str]], Dict[str, str]]] = {
+PROVIDERS: Dict[str, Callable[..., Dict[str, Any]]] = {
     "gemini": generate_with_gemini,
     "openai": generate_with_openai,
     "claude": generate_with_claude,
+    "ollama": generate_with_ollama,
 }

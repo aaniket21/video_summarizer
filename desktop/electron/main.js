@@ -1,5 +1,5 @@
 const path = require("path");
-const { app, BrowserWindow, ipcMain } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog } = require("electron");
 const { spawn } = require("child_process");
 const fs = require("fs");
 const os = require("os");
@@ -8,6 +8,8 @@ const WebSocket = require("ws");
 let mainWindow = null;
 let wsServer = null;
 let pythonProcess = null;
+let watchFolder = null;
+let watchWatcher = null;
 
 const queue = [];
 
@@ -21,6 +23,10 @@ const MODEL_DEFAULTS = [
 
 function getModelsPath() {
   return path.join(app.getPath("userData"), "models.json");
+}
+
+function getWatchConfigPath() {
+  return path.join(app.getPath("userData"), "watch.json");
 }
 
 function loadModels() {
@@ -44,6 +50,28 @@ function saveModels(models) {
   fs.writeFileSync(getModelsPath(), JSON.stringify(models, null, 2));
 }
 
+function loadWatchFolder() {
+  const configPath = getWatchConfigPath();
+  if (!fs.existsSync(configPath)) {
+    return null;
+  }
+  try {
+    const raw = fs.readFileSync(configPath, "utf-8");
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed.path === "string") {
+      return parsed.path;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function saveWatchFolder(folderPath) {
+  const payload = { path: folderPath };
+  fs.writeFileSync(getWatchConfigPath(), JSON.stringify(payload, null, 2));
+}
+
 function enqueueJob(job) {
   queue.push(job);
   broadcastQueue();
@@ -57,6 +85,11 @@ function broadcastQueue() {
 function broadcastBridgeStatus(payload) {
   if (!mainWindow) return;
   mainWindow.webContents.send("bridge:status", payload);
+}
+
+function broadcastWatchStatus(payload) {
+  if (!mainWindow) return;
+  mainWindow.webContents.send("watch:status", payload);
 }
 
 async function getHardwareInfo() {
@@ -162,10 +195,64 @@ function startWebSocketBridge() {
   });
 }
 
+function isWatchableFile(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  return [".mp3", ".mp4", ".wav", ".m4a", ".mov", ".mkv"].includes(ext);
+}
+
+function stopWatchFolder() {
+  if (watchWatcher) {
+    watchWatcher.close();
+    watchWatcher = null;
+  }
+}
+
+function startWatchFolder() {
+  stopWatchFolder();
+  if (!watchFolder) {
+    broadcastWatchStatus({ status: "disabled" });
+    return;
+  }
+
+  try {
+    watchWatcher = fs.watch(watchFolder, { persistent: true }, (eventType, filename) => {
+      if (!filename) return;
+      const fullPath = path.join(watchFolder, filename.toString());
+      if (!isWatchableFile(fullPath)) return;
+      try {
+        const stats = fs.statSync(fullPath);
+        if (!stats.isFile()) return;
+      } catch {
+        return;
+      }
+      enqueueJob({
+        id: `watch-${Date.now()}`,
+        url: fullPath,
+        source: "watch-folder",
+        status: "queued",
+        createdAt: Date.now()
+      });
+    });
+    broadcastWatchStatus({ status: "listening", path: watchFolder });
+  } catch (error) {
+    broadcastWatchStatus({ status: "error", message: error?.message || "Watch failed" });
+  }
+}
+
+function setWatchFolder(nextPath) {
+  watchFolder = nextPath;
+  saveWatchFolder(watchFolder);
+  startWatchFolder();
+  return watchFolder;
+}
+
 app.whenReady().then(() => {
   createWindow();
   startPythonEngine();
   startWebSocketBridge();
+
+  watchFolder = loadWatchFolder();
+  startWatchFolder();
 
   ipcMain.handle("hardware:get", async () => getHardwareInfo());
   ipcMain.handle("models:get", () => loadModels());
@@ -196,6 +283,17 @@ app.whenReady().then(() => {
     });
     return queue;
   });
+  ipcMain.handle("watch:get", () => watchFolder);
+  ipcMain.handle("watch:pick", async () => {
+    const result = await dialog.showOpenDialog({
+      properties: ["openDirectory", "createDirectory"]
+    });
+    if (result.canceled || !result.filePaths?.length) {
+      return watchFolder;
+    }
+    return setWatchFolder(result.filePaths[0]);
+  });
+  ipcMain.handle("watch:set", (_event, folderPath) => setWatchFolder(folderPath));
 });
 
 app.on("window-all-closed", () => {
@@ -208,6 +306,7 @@ app.on("before-quit", () => {
   if (wsServer) {
     wsServer.close();
   }
+  stopWatchFolder();
   if (pythonProcess) {
     pythonProcess.kill();
   }

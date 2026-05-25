@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import os
+import secrets
 import subprocess
 import time
 import uuid
@@ -21,8 +22,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .db.session import get_db
 from .db.repository import SQLAlchemyJobRepository, JobStatus
 from .db.billing_repository import BillingRepository
-from .db.models import JobModel
+from .db.integrations_repository import IntegrationsRepository
+from .db.team_repository import TeamRepository
+from .db.models import JobModel, TeamRole
 from .llm import providers as llm_providers
+from .llm.study_tools import build_chat_answer, normalize_study_pack
 
 app = FastAPI()
 def parse_bearer_token(authorization: str | None) -> str | None:
@@ -89,22 +93,64 @@ def require_stripe_client():
     return stripe
 
 
+async def require_team_access(
+    repo: TeamRepository,
+    team_id: uuid.UUID,
+    user_id: str | None,
+    email: str | None,
+    admin_required: bool = False,
+):
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token: missing sub claim")
+    team = await repo.get_team(team_id)
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    if team.owner_user_id == user_id:
+        return team
+
+    member = await repo.get_member_for_user(team_id, user_id, email)
+    if not member:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    if admin_required and member.role != TeamRole.ADMIN:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    return team
+
+
 def get_price_id_for_plan(plan: str) -> str:
     if plan == "student":
         return os.getenv("STRIPE_STUDENT_PRICE_ID", "")
     if plan == "pro":
         return os.getenv("STRIPE_PRO_PRICE_ID", "")
+    if plan == "team":
+        return os.getenv("STRIPE_TEAM_PRICE_ID", "")
     return ""
 
 
 def map_price_id_to_plan(price_id: str) -> Optional[str]:
     student_price = os.getenv("STRIPE_STUDENT_PRICE_ID", "")
     pro_price = os.getenv("STRIPE_PRO_PRICE_ID", "")
+    team_price = os.getenv("STRIPE_TEAM_PRICE_ID", "")
     if student_price and price_id == student_price:
         return "student"
     if pro_price and price_id == pro_price:
         return "pro"
+    if team_price and price_id == team_price:
+        return "team"
     return None
+
+
+def generate_api_key() -> tuple[str, str, str]:
+    raw_key = f"vs_{secrets.token_urlsafe(32)}"
+    key_prefix = raw_key[:8]
+    key_hash = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+    return raw_key, key_prefix, key_hash
+
+
+def generate_webhook_secret() -> str:
+    return secrets.token_urlsafe(32)
 
 
 @app.get("/api/profile")
@@ -133,6 +179,758 @@ async def get_admin(authorization: str | None = Header(default=None)):
 		return JSONResponse({"error": "Insufficient permissions"}, status_code=403)
 
 	return JSONResponse({"status": "ok"})
+
+
+@app.get("/api/v1/teams")
+async def list_teams(
+    authorization: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        claims = require_auth(authorization)
+    except (PermissionError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=401)
+
+    user_id = claims.get("sub")
+    if not user_id:
+        return JSONResponse({"error": "Invalid token: missing sub claim"}, status_code=401)
+    email = claims.get("email")
+    repo = TeamRepository(db)
+    teams = await repo.list_teams_for_user(user_id, email)
+    return JSONResponse({
+        "items": [
+            {
+                "id": str(team.id),
+                "name": team.name,
+                "plan": team.plan,
+                "seat_count": team.seat_count,
+                "billing_status": team.billing_status,
+            }
+            for team in teams
+        ]
+    })
+
+
+@app.post("/api/v1/teams", status_code=201)
+async def create_team(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        claims = require_auth(authorization)
+    except (PermissionError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=401)
+
+    user_id = claims.get("sub")
+    if not user_id:
+        return JSONResponse({"error": "Invalid token: missing sub claim"}, status_code=401)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    name = str(body.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"error": "Missing team name"}, status_code=400)
+
+    seat_count = int(body.get("seat_count") or 3)
+    seat_count = max(1, seat_count)
+
+    repo = TeamRepository(db)
+    team = await repo.create_team(owner_user_id=user_id, name=name, seat_count=seat_count)
+
+    return JSONResponse(
+        {
+            "id": str(team.id),
+            "name": team.name,
+            "plan": team.plan,
+            "seat_count": team.seat_count,
+            "billing_status": team.billing_status,
+        },
+        status_code=201,
+        headers={"Location": f"/api/v1/teams/{team.id}"},
+    )
+
+
+@app.get("/api/v1/teams/{team_id}")
+async def get_team(
+    team_id: str,
+    authorization: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        claims = require_auth(authorization)
+    except (PermissionError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=401)
+
+    try:
+        team_uuid = uuid.UUID(team_id)
+    except ValueError:
+        return JSONResponse({"error": "Invalid team ID"}, status_code=400)
+
+    repo = TeamRepository(db)
+    try:
+        team = await require_team_access(
+            repo,
+            team_uuid,
+            claims.get("sub"),
+            claims.get("email"),
+        )
+    except HTTPException as exc:
+        return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
+
+    return JSONResponse({
+        "id": str(team.id),
+        "name": team.name,
+        "plan": team.plan,
+        "seat_count": team.seat_count,
+        "billing_status": team.billing_status,
+        "branding": team.branding_json,
+    })
+
+
+@app.get("/api/v1/teams/{team_id}/members")
+async def list_team_members(
+    team_id: str,
+    authorization: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        claims = require_auth(authorization)
+    except (PermissionError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=401)
+
+    try:
+        team_uuid = uuid.UUID(team_id)
+    except ValueError:
+        return JSONResponse({"error": "Invalid team ID"}, status_code=400)
+
+    repo = TeamRepository(db)
+    try:
+        await require_team_access(
+            repo,
+            team_uuid,
+            claims.get("sub"),
+            claims.get("email"),
+        )
+    except HTTPException as exc:
+        return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
+
+    members = await repo.list_members(team_uuid)
+    return JSONResponse({
+        "items": [
+            {
+                "id": str(member.id),
+                "email": member.email,
+                "role": member.role.value,
+                "status": member.status,
+                "user_id": member.user_id,
+            }
+            for member in members
+        ]
+    })
+
+
+@app.post("/api/v1/teams/{team_id}/members", status_code=201)
+async def add_team_member(
+    team_id: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        claims = require_auth(authorization)
+    except (PermissionError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=401)
+
+    try:
+        team_uuid = uuid.UUID(team_id)
+    except ValueError:
+        return JSONResponse({"error": "Invalid team ID"}, status_code=400)
+
+    repo = TeamRepository(db)
+    try:
+        await require_team_access(
+            repo,
+            team_uuid,
+            claims.get("sub"),
+            claims.get("email"),
+            admin_required=True,
+        )
+    except HTTPException as exc:
+        return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    email = str(body.get("email") or "").strip().lower()
+    if not email:
+        return JSONResponse({"error": "Missing email"}, status_code=400)
+
+    role_value = str(body.get("role") or "member").lower()
+    try:
+        role = TeamRole(role_value)
+    except ValueError:
+        return JSONResponse({"error": "Invalid role"}, status_code=400)
+
+    member = await repo.add_member(team_uuid, email=email, role=role)
+    return JSONResponse(
+        {
+            "id": str(member.id),
+            "email": member.email,
+            "role": member.role.value,
+            "status": member.status,
+        },
+        status_code=201,
+    )
+
+
+@app.patch("/api/v1/teams/{team_id}/members/{member_id}")
+async def update_team_member(
+    team_id: str,
+    member_id: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        claims = require_auth(authorization)
+    except (PermissionError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=401)
+
+    try:
+        team_uuid = uuid.UUID(team_id)
+        member_uuid = uuid.UUID(member_id)
+    except ValueError:
+        return JSONResponse({"error": "Invalid ID"}, status_code=400)
+
+    repo = TeamRepository(db)
+    try:
+        await require_team_access(
+            repo,
+            team_uuid,
+            claims.get("sub"),
+            claims.get("email"),
+            admin_required=True,
+        )
+    except HTTPException as exc:
+        return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    role_value = str(body.get("role") or "").lower()
+    if not role_value:
+        return JSONResponse({"error": "Missing role"}, status_code=400)
+    try:
+        role = TeamRole(role_value)
+    except ValueError:
+        return JSONResponse({"error": "Invalid role"}, status_code=400)
+
+    member = await repo.update_member_role(member_uuid, role)
+    if not member:
+        return JSONResponse({"error": "Member not found"}, status_code=404)
+
+    return JSONResponse({
+        "id": str(member.id),
+        "email": member.email,
+        "role": member.role.value,
+        "status": member.status,
+    })
+
+
+@app.delete("/api/v1/teams/{team_id}/members/{member_id}")
+async def remove_team_member(
+    team_id: str,
+    member_id: str,
+    authorization: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        claims = require_auth(authorization)
+    except (PermissionError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=401)
+
+    try:
+        team_uuid = uuid.UUID(team_id)
+        member_uuid = uuid.UUID(member_id)
+    except ValueError:
+        return JSONResponse({"error": "Invalid ID"}, status_code=400)
+
+    repo = TeamRepository(db)
+    try:
+        await require_team_access(
+            repo,
+            team_uuid,
+            claims.get("sub"),
+            claims.get("email"),
+            admin_required=True,
+        )
+    except HTTPException as exc:
+        return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
+
+    removed = await repo.remove_member(member_uuid)
+    if not removed:
+        return JSONResponse({"error": "Member not found"}, status_code=404)
+    return JSONResponse({"status": "removed"})
+
+
+@app.get("/api/v1/teams/{team_id}/collections")
+async def list_collections(
+    team_id: str,
+    authorization: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        claims = require_auth(authorization)
+    except (PermissionError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=401)
+
+    try:
+        team_uuid = uuid.UUID(team_id)
+    except ValueError:
+        return JSONResponse({"error": "Invalid team ID"}, status_code=400)
+
+    repo = TeamRepository(db)
+    try:
+        await require_team_access(
+            repo,
+            team_uuid,
+            claims.get("sub"),
+            claims.get("email"),
+        )
+    except HTTPException as exc:
+        return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
+
+    collections = await repo.list_collections(team_uuid)
+    return JSONResponse({
+        "items": [
+            {
+                "id": str(collection.id),
+                "name": collection.name,
+                "description": collection.description,
+                "created_by": collection.created_by,
+            }
+            for collection in collections
+        ]
+    })
+
+
+@app.post("/api/v1/teams/{team_id}/collections", status_code=201)
+async def create_collection(
+    team_id: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        claims = require_auth(authorization)
+    except (PermissionError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=401)
+
+    try:
+        team_uuid = uuid.UUID(team_id)
+    except ValueError:
+        return JSONResponse({"error": "Invalid team ID"}, status_code=400)
+
+    repo = TeamRepository(db)
+    try:
+        await require_team_access(
+            repo,
+            team_uuid,
+            claims.get("sub"),
+            claims.get("email"),
+            admin_required=True,
+        )
+    except HTTPException as exc:
+        return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    name = str(body.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"error": "Missing name"}, status_code=400)
+    description = body.get("description")
+
+    collection = await repo.create_collection(
+        team_id=team_uuid,
+        name=name,
+        description=description,
+        created_by=claims.get("sub") or "",
+    )
+
+    return JSONResponse(
+        {
+            "id": str(collection.id),
+            "name": collection.name,
+            "description": collection.description,
+            "created_by": collection.created_by,
+        },
+        status_code=201,
+    )
+
+
+@app.get("/api/v1/teams/{team_id}/sso")
+async def get_team_sso(
+    team_id: str,
+    authorization: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        claims = require_auth(authorization)
+    except (PermissionError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=401)
+
+    try:
+        team_uuid = uuid.UUID(team_id)
+    except ValueError:
+        return JSONResponse({"error": "Invalid team ID"}, status_code=400)
+
+    repo = TeamRepository(db)
+    try:
+        await require_team_access(
+            repo,
+            team_uuid,
+            claims.get("sub"),
+            claims.get("email"),
+        )
+    except HTTPException as exc:
+        return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
+
+    record = await repo.get_sso_provider(team_uuid)
+    if not record:
+        return JSONResponse({"provider": None, "domain": None, "client_id": None, "is_enabled": False})
+
+    return JSONResponse({
+        "provider": record.provider,
+        "domain": record.domain,
+        "client_id": record.client_id,
+        "is_enabled": record.is_enabled,
+    })
+
+
+@app.put("/api/v1/teams/{team_id}/sso")
+async def update_team_sso(
+    team_id: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        claims = require_auth(authorization)
+    except (PermissionError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=401)
+
+    try:
+        team_uuid = uuid.UUID(team_id)
+    except ValueError:
+        return JSONResponse({"error": "Invalid team ID"}, status_code=400)
+
+    repo = TeamRepository(db)
+    try:
+        await require_team_access(
+            repo,
+            team_uuid,
+            claims.get("sub"),
+            claims.get("email"),
+            admin_required=True,
+        )
+    except HTTPException as exc:
+        return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    provider = str(body.get("provider") or "").strip().lower()
+    domain = str(body.get("domain") or "").strip().lower()
+    client_id = str(body.get("client_id") or "").strip()
+    is_enabled = bool(body.get("is_enabled", False))
+
+    if not provider:
+        return JSONResponse({"error": "Missing provider"}, status_code=400)
+    if not domain:
+        return JSONResponse({"error": "Missing domain"}, status_code=400)
+
+    record = await repo.upsert_sso_provider(
+        team_id=team_uuid,
+        provider=provider,
+        domain=domain,
+        client_id=client_id or None,
+        is_enabled=is_enabled,
+    )
+
+    return JSONResponse({
+        "provider": record.provider,
+        "domain": record.domain,
+        "client_id": record.client_id,
+        "is_enabled": record.is_enabled,
+    })
+
+
+@app.get("/api/v1/api-keys")
+async def list_api_keys(
+    authorization: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        claims = require_auth(authorization)
+    except (PermissionError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=401)
+
+    user_id = claims.get("sub")
+    if not user_id:
+        return JSONResponse({"error": "Invalid token: missing sub claim"}, status_code=401)
+
+    repo = IntegrationsRepository(db)
+    keys = await repo.list_api_keys(user_id)
+    return JSONResponse({
+        "items": [
+            {
+                "id": str(item.id),
+                "label": item.label,
+                "key_prefix": item.key_prefix,
+                "team_id": str(item.team_id) if item.team_id else None,
+                "is_active": item.is_active,
+                "created_at": item.created_at.isoformat(),
+                "last_used_at": item.last_used_at.isoformat() if item.last_used_at else None,
+            }
+            for item in keys
+        ]
+    })
+
+
+@app.post("/api/v1/api-keys", status_code=201)
+async def create_api_key(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        claims = require_auth(authorization)
+    except (PermissionError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=401)
+
+    user_id = claims.get("sub")
+    if not user_id:
+        return JSONResponse({"error": "Invalid token: missing sub claim"}, status_code=401)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    label = str(body.get("label") or "").strip()
+    if not label:
+        return JSONResponse({"error": "Missing label"}, status_code=400)
+
+    team_id_value = body.get("team_id")
+    team_id = None
+    if team_id_value:
+        try:
+            team_id = uuid.UUID(str(team_id_value))
+        except ValueError:
+            return JSONResponse({"error": "Invalid team ID"}, status_code=400)
+
+        team_repo = TeamRepository(db)
+        try:
+            await require_team_access(
+                team_repo,
+                team_id,
+                claims.get("sub"),
+                claims.get("email"),
+                admin_required=True,
+            )
+        except HTTPException as exc:
+            return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
+
+    raw_key, key_prefix, key_hash = generate_api_key()
+    repo = IntegrationsRepository(db)
+    record = await repo.create_api_key(
+        user_id=user_id,
+        label=label,
+        key_prefix=key_prefix,
+        key_hash=key_hash,
+        team_id=team_id,
+    )
+
+    return JSONResponse(
+        {
+            "id": str(record.id),
+            "label": record.label,
+            "key_prefix": record.key_prefix,
+            "team_id": str(record.team_id) if record.team_id else None,
+            "key": raw_key,
+        },
+        status_code=201,
+    )
+
+
+@app.delete("/api/v1/api-keys/{key_id}")
+async def delete_api_key(
+    key_id: str,
+    authorization: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        claims = require_auth(authorization)
+    except (PermissionError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=401)
+
+    user_id = claims.get("sub")
+    if not user_id:
+        return JSONResponse({"error": "Invalid token: missing sub claim"}, status_code=401)
+
+    try:
+        key_uuid = uuid.UUID(key_id)
+    except ValueError:
+        return JSONResponse({"error": "Invalid key ID"}, status_code=400)
+
+    repo = IntegrationsRepository(db)
+    removed = await repo.delete_api_key(key_uuid, user_id)
+    if not removed:
+        return JSONResponse({"error": "API key not found"}, status_code=404)
+    return JSONResponse({"status": "deleted"})
+
+
+@app.get("/api/v1/webhooks")
+async def list_webhooks(
+    authorization: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        claims = require_auth(authorization)
+    except (PermissionError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=401)
+
+    user_id = claims.get("sub")
+    if not user_id:
+        return JSONResponse({"error": "Invalid token: missing sub claim"}, status_code=401)
+
+    repo = IntegrationsRepository(db)
+    webhooks = await repo.list_webhooks(user_id)
+    return JSONResponse({
+        "items": [
+            {
+                "id": str(hook.id),
+                "url": hook.url,
+                "events": hook.events,
+                "team_id": str(hook.team_id) if hook.team_id else None,
+                "is_active": hook.is_active,
+            }
+            for hook in webhooks
+        ]
+    })
+
+
+@app.post("/api/v1/webhooks", status_code=201)
+async def create_webhook(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        claims = require_auth(authorization)
+    except (PermissionError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=401)
+
+    user_id = claims.get("sub")
+    if not user_id:
+        return JSONResponse({"error": "Invalid token: missing sub claim"}, status_code=401)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    url = str(body.get("url") or "").strip()
+    if not url:
+        return JSONResponse({"error": "Missing webhook URL"}, status_code=400)
+
+    events = body.get("events")
+    if not isinstance(events, list) or not events:
+        return JSONResponse({"error": "Missing events"}, status_code=400)
+    events = [str(item).strip() for item in events if str(item).strip()]
+    if not events:
+        return JSONResponse({"error": "Missing events"}, status_code=400)
+
+    team_id_value = body.get("team_id")
+    team_id = None
+    if team_id_value:
+        try:
+            team_id = uuid.UUID(str(team_id_value))
+        except ValueError:
+            return JSONResponse({"error": "Invalid team ID"}, status_code=400)
+
+        team_repo = TeamRepository(db)
+        try:
+            await require_team_access(
+                team_repo,
+                team_id,
+                claims.get("sub"),
+                claims.get("email"),
+                admin_required=True,
+            )
+        except HTTPException as exc:
+            return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
+
+    secret = generate_webhook_secret()
+    repo = IntegrationsRepository(db)
+    hook = await repo.create_webhook(
+        user_id=user_id,
+        url=url,
+        events=events,
+        secret=secret,
+        team_id=team_id,
+    )
+
+    return JSONResponse(
+        {
+            "id": str(hook.id),
+            "url": hook.url,
+            "events": hook.events,
+            "team_id": str(hook.team_id) if hook.team_id else None,
+            "secret": secret,
+        },
+        status_code=201,
+    )
+
+
+@app.delete("/api/v1/webhooks/{webhook_id}")
+async def delete_webhook(
+    webhook_id: str,
+    authorization: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        claims = require_auth(authorization)
+    except (PermissionError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=401)
+
+    user_id = claims.get("sub")
+    if not user_id:
+        return JSONResponse({"error": "Invalid token: missing sub claim"}, status_code=401)
+
+    try:
+        webhook_uuid = uuid.UUID(webhook_id)
+    except ValueError:
+        return JSONResponse({"error": "Invalid webhook ID"}, status_code=400)
+
+    repo = IntegrationsRepository(db)
+    removed = await repo.delete_webhook(webhook_uuid, user_id)
+    if not removed:
+        return JSONResponse({"error": "Webhook not found"}, status_code=404)
+    return JSONResponse({"status": "deleted"})
 
 
 @app.post("/api/v1/jobs", status_code=201)
@@ -317,7 +1115,7 @@ async def create_billing_checkout(
         body = {}
 
     plan = str(body.get("plan") or "").strip().lower()
-    if plan not in {"student", "pro"}:
+    if plan not in {"student", "pro", "team"}:
         return JSONResponse({"error": "Unsupported plan"}, status_code=400)
 
     price_id = get_price_id_for_plan(plan)
@@ -393,6 +1191,58 @@ async def create_billing_portal(
     )
 
     return JSONResponse({"url": session.url})
+
+
+@app.post("/api/v1/billing/student/verify")
+async def start_student_verification(
+    authorization: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        claims = require_auth(authorization)
+    except (PermissionError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=401)
+
+    user_id = claims.get("sub")
+    if not user_id:
+        return JSONResponse({"error": "Invalid token: missing sub claim"}, status_code=401)
+
+    reference_id = str(uuid.uuid4())
+    billing_repo = BillingRepository(db)
+    record = await billing_repo.create_student_verification(user_id, reference_id=reference_id)
+
+    verification_url = os.getenv("SHEERID_VERIFICATION_URL", "")
+    return JSONResponse({
+        "status": record.status,
+        "reference_id": record.reference_id,
+        "verification_url": verification_url,
+    })
+
+
+@app.get("/api/v1/billing/student/status")
+async def get_student_verification_status(
+    authorization: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        claims = require_auth(authorization)
+    except (PermissionError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=401)
+
+    user_id = claims.get("sub")
+    if not user_id:
+        return JSONResponse({"error": "Invalid token: missing sub claim"}, status_code=401)
+
+    billing_repo = BillingRepository(db)
+    record = await billing_repo.get_student_verification(user_id)
+    if not record:
+        return JSONResponse({"status": "not_started"})
+
+    return JSONResponse({
+        "status": record.status,
+        "reference_id": record.reference_id,
+        "verified_at": record.verified_at.isoformat() if record.verified_at else None,
+    })
 
 
 @app.post("/api/v1/billing/webhook")
@@ -519,19 +1369,24 @@ async def create_upload():
 
 @app.post("/api/v1/jobs/{job_id}/chat")
 async def chat_with_job(job_id: str, request: Request):
-	try:
-		body = await request.json()
-	except Exception:
-		body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
 
-	question = str(body.get("question") or "").strip()
-	if not question:
-		return JSONResponse({"error": "Missing question"}, status_code=400)
+    question = str(body.get("question") or "").strip()
+    if not question:
+        return JSONResponse({"error": "Missing question"}, status_code=400)
 
-	return JSONResponse({
-		"answer": "This is a placeholder answer. Connect RAG pipeline to provide real responses.",
-		"citations": [],
-	})
+    transcript = str(body.get("transcript") or body.get("metadata", {}).get("transcript") or "").strip()
+    notes_markdown = str(body.get("notes_markdown") or body.get("metadata", {}).get("notes_markdown") or "").strip()
+    sections = body.get("sections") if isinstance(body.get("sections"), list) else []
+    chat_payload = build_chat_answer(question, transcript, notes_markdown=notes_markdown, sections=sections)
+
+    return JSONResponse({
+        "answer": chat_payload["answer"],
+        "citations": chat_payload["citations"],
+    })
 
 SCRIPT_PATH = Path(__file__).resolve().parents[2] / "web" / "server" / "download_audio.py"
 
@@ -556,8 +1411,24 @@ def run_download_audio(url: str) -> dict:
 		raise RuntimeError(f"Failed to parse python output: {exc.msg}") from exc
 
 
-def generate_notes_payload(transcript: str, chapters: list) -> dict:
-    return llm_providers.generate_notes(transcript, chapters)
+def generate_notes_payload(
+    transcript: str,
+    chapters: list,
+    style: str = "student_notes",
+    output_language: str = "en",
+    source_title: str | None = None,
+    source_url: str | None = None,
+) -> dict:
+    payload = llm_providers.generate_notes(transcript, chapters, style=style, output_language=output_language)
+    return normalize_study_pack(
+        payload,
+        transcript=transcript,
+        chapters=chapters,
+        style=style,
+        output_language=output_language,
+        source_title=source_title,
+        source_url=source_url,
+    )
 
 
 @app.post("/api/download-audio")
@@ -585,24 +1456,32 @@ async def download_audio(request: Request):
 
 @app.post("/api/generate-notes")
 async def generate_notes(request: Request):
-	try:
-		body = await request.json()
-	except Exception as exc:
-		message = str(exc) or "Failed to generate notes."
-		return JSONResponse({"error": message}, status_code=500)
+    try:
+        body = await request.json()
+    except Exception as exc:
+        message = str(exc) or "Failed to generate notes."
+        return JSONResponse({"error": message}, status_code=500)
 
-	if not os.getenv("GEMINI_API_KEY", ""):
-		return JSONResponse({"error": "GEMINI_API_KEY is not configured on the server."}, status_code=500)
+    transcript = str(body.get("transcript") or "").strip()
+    if not transcript:
+        return JSONResponse({"error": "Missing transcript."}, status_code=400)
 
-	transcript = str(body.get("transcript") or "").strip()
-	if not transcript:
-		return JSONResponse({"error": "Missing transcript."}, status_code=400)
+    chapters = body.get("chapters") if isinstance(body.get("chapters"), list) else []
+    style = str(body.get("style") or body.get("summary_style") or "student_notes").strip() or "student_notes"
+    output_language = str(body.get("output_language") or body.get("outputLanguage") or "en").strip() or "en"
+    source_title = str(body.get("source_title") or body.get("sourceTitle") or "").strip() or None
+    source_url = str(body.get("source_url") or body.get("sourceUrl") or "").strip() or None
 
-	chapters = body.get("chapters") if isinstance(body.get("chapters"), list) else []
+    try:
+        payload = generate_notes_payload(
+            transcript,
+            chapters,
+            style=style,
+            output_language=output_language,
+            source_title=source_title,
+            source_url=source_url,
+        )
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
 
-	try:
-		payload = generate_notes_payload(transcript, chapters)
-	except Exception as exc:
-		return JSONResponse({"error": str(exc)}, status_code=500)
-
-	return JSONResponse(payload)
+    return JSONResponse(payload)
